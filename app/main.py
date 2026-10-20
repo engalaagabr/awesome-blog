@@ -5,13 +5,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from schemas import PostCreate, PostResponse
+from app.schemas import PostCreate, PostResponse
+
+import random 
+from datetime import date, timedelta
 
 app = FastAPI()
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory="app/templates")
 
 posts: list[dict] = [
     {
@@ -66,12 +69,16 @@ def get_posts():
 )
 def create_post(post: PostCreate):
     new_id = max(p["id"] for p in posts) + 1 if posts else 1
+
+    random_date = date(2022, 1, 1) + timedelta(days=random.randint(0, (date(2026, 12, 31) - date(2022, 1, 1)).days))
+    formatted_date = random_date.strftime("%B %d, %Y")
+
     new_post = {
         "id": new_id,
         "author": post.author,
         "title": post.title,
         "content": post.content,
-        "date_posted": "April 23, 2025",
+        "date_posted": formatted_date,
     }
     posts.append(new_post)
     return new_post

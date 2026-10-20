@@ -8,6 +8,8 @@ class PostBase(BaseModel):
 class PostCreate(PostBase):
     pass
 
+
+# inherit from PostBase and add id and date_posted fields
 class PostResponse(PostBase):
     model_config = ConfigDict(from_attributes=True)
 
