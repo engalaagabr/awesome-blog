@@ -13,6 +13,7 @@ from app.api.routers.post import router as posts_router
 from app.api.routers.user import router as users_router
 from app.core.database import Base, engine, get_db
 from app.models.post import Post
+from app.models.user import User
 
 
 @asynccontextmanager
@@ -54,6 +55,19 @@ def post_page(request: Request, post_id: int, db: Session = Depends(get_db)):
         "post.html",
         {"post": post, "title": title},
     )
+
+@app.get("/users/{user_id}/posts", include_in_schema=False)
+def user_posts(request: Request, user_id: int, db: Session = Depends(get_db)):
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    return templates.TemplateResponse(
+        request,
+        "user_posts.html",
+        {"user": user, "posts": user.posts, "title": f"Posts by {user.username}"},
+    )
+
 
 @app.exception_handler(StarletteHTTPException)
 def general_http_exception_handler(request: Request, exception: StarletteHTTPException):

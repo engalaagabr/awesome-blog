@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Depends, HTTPException
 from sqlalchemy.orm import Session
 from starlette import status
 from app.models.user import User
+from app.schemas.post import PostResponse
 from app.schemas.user import UserCreate, UserResponse, UserLogin
 from app.core.database import get_db
 from sqlalchemy.orm import Session
@@ -54,6 +55,18 @@ def login_user(user_login_schema: UserLogin, db: Session = Depends(get_db)):
         "username": user.username,
         "email": user.email
     }
+
+# get user posts
+@router.get("/{user_id}/posts", response_model=list[PostResponse])
+def get_user_posts(user_id: int, db: Session = Depends(get_db)):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    return user.posts
+
 @router.get("/profile")
 def get_user_profile():
     pass
