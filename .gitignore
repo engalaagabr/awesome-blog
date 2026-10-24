@@ -28,4 +28,5 @@ htmlcov/
 data/contracts/
 :memory:*.ses
 
-
+PROJECT_OVERVIEW.md
+*.db
