@@ -21,6 +21,3 @@ class PostResponse(PostBase):
 class PostUpdate(PostBase):
     title : str | None = Field(None, min_length=1, max_length=100)
     content : str | None = Field(None, min_length=1)
-
-class PostDelete(BaseModel):
-    pass
