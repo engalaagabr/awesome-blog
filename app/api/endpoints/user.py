@@ -1,29 +1,33 @@
-from fastapi import APIRouter, Depends, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from starlette import status
+from starlette.concurrency import run_in_threadpool
+
+from app.core.database import get_db
+from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.schemas.post import PostResponse
 from app.schemas.user import UserCreate, UserResponse, UserLogin, UserUpdate
-from app.core.database import get_db
-from sqlalchemy.orm import Session
-
-from app.core.security import hash_password, verify_password
 
 router = APIRouter()
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register_user(user_schema: UserCreate, db: Session = Depends(get_db)):
+async def register_user(user_schema: UserCreate, db: AsyncSession = Depends(get_db)):
     # Check if the username or email already exists in the database
-    existing_user = db.query(User).filter(
-        (User.username == user_schema.username) | (User.email == user_schema.email)
-    ).first()
+    existing_user = await db.scalar(
+        select(User).where(
+            (User.username == user_schema.username) | (User.email == user_schema.email)
+        ).limit(1)
+    )
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username or email already exists.",
         )
 
-    hashed_pwd = hash_password(user_schema.password)
+    hashed_pwd = await run_in_threadpool(hash_password, user_schema.password)
 
     # Create a new user instance
     new_user = User(
@@ -33,18 +37,20 @@ def register_user(user_schema: UserCreate, db: Session = Depends(get_db)):
         password=hashed_pwd,  
     )
     db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    await db.commit()
+    await db.refresh(new_user)
 
     return new_user
     
 
 
 @router.post("/login", status_code=status.HTTP_200_OK)
-def login_user(user_login_schema: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == user_login_schema.username).first()
+async def login_user(user_login_schema: UserLogin, db: AsyncSession = Depends(get_db)):
+    user = await db.scalar(select(User).where(User.username == user_login_schema.username))
 
-    if not user or not verify_password(user_login_schema.password, user.password):
+    if not user or not await run_in_threadpool(
+        verify_password, user_login_schema.password, user.password
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -59,8 +65,8 @@ def login_user(user_login_schema: UserLogin, db: Session = Depends(get_db)):
 
 # get user posts
 @router.get("/{user_id}/posts", response_model=list[PostResponse])
-def get_user_posts(user_id: int, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
+async def get_user_posts(user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, user_id, options=[selectinload(User.posts)])
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -69,8 +75,8 @@ def get_user_posts(user_id: int, db: Session = Depends(get_db)):
     return user.posts
 
 @router.get("/{user_id}/profile", response_model=UserResponse)
-def get_user_profile(user_id: int, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
+async def get_user_profile(user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -79,8 +85,8 @@ def get_user_profile(user_id: int, db: Session = Depends(get_db)):
     return user
 
 @router.patch("/{user_id}/update", response_model=UserResponse)
-def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
+async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -94,23 +100,23 @@ def update_user(user_id: int, user_update: UserUpdate, db: Session = Depends(get
     if "image_file" in user_update.model_fields_set:
         user.image_file = user_update.image_file
     if user_update.password is not None:
-        hashed_pwd = hash_password(user_update.password)
+        hashed_pwd = await run_in_threadpool(hash_password, user_update.password)
         user.password = hashed_pwd
 
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
 
     return user
 
 @router.delete("/{user_id}/delete", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(user_id: int, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
+async def delete_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
     
-    db.delete(user.posts)
-    db.delete(user)
-    db.commit()
+    # The User.posts relationship cascades deletion to this user's posts.
+    await db.delete(user)
+    await db.commit()

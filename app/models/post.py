@@ -25,4 +25,7 @@ class Post(Base):
         default=lambda: datetime.now(UTC),
     )
 
-    author: Mapped["User"] = relationship("User", back_populates="posts")
+    # Responses and templates read author synchronously, so fetch it with the post.
+    author: Mapped["User"] = relationship(
+        "User", back_populates="posts", lazy="joined"
+    )
