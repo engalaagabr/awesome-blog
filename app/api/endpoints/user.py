@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette import status
@@ -103,7 +104,11 @@ async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = 
         hashed_pwd = await run_in_threadpool(hash_password, user_update.password)
         user.password = hashed_pwd
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Username or email already exists.")
     await db.refresh(user)
 
     return user
