@@ -1,89 +1,17 @@
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Request, status, Depends
-from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.api.routers.post import router as posts_router
 from app.api.routers.user import router as users_router
-from app.core.database import Base, engine, get_db
-from app.models.post import Post
-from app.models.user import User
+from app.core.exceptions import exception_handlers
+from app.core.lifespan import lifespan
+from app.web.routes import router as pages_router
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-        yield
-    finally:
-        await engine.dispose()
-
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, exception_handlers=exception_handlers)
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.mount("/media", StaticFiles(directory="app/media"), name="media")
 
-templates = Jinja2Templates(directory="app/templates")
-
 app.include_router(posts_router)
 app.include_router(users_router)
-
-@app.get("/", include_in_schema=False, name="home")
-@app.get("/posts", include_in_schema=False, name="posts")
-async def home(request: Request, db: AsyncSession = Depends(get_db)):
-    posts = (await db.scalars(select(Post))).all()
-    return templates.TemplateResponse(
-        request,
-        "home.html",
-        {"posts": posts, "title": "Home"},
-    )
-
-@app.get("/posts/{post_id}", include_in_schema=False)
-async def post_page(request: Request, post_id: int, db: AsyncSession = Depends(get_db)):
-    # البحث عن مقال معين بواسطة الـ ID في قاعدة البيانات
-    post = await db.get(Post, post_id)
-    if not post:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
-
-    title = post.title[:50]
-    return templates.TemplateResponse(
-        request,
-        "post.html",
-        {"post": post, "title": title},
-    )
-
-@app.get("/users/{user_id}/posts", include_in_schema=False)
-async def user_posts(request: Request, user_id: int, db: AsyncSession = Depends(get_db)):
-    user = await db.get(User, user_id, options=[selectinload(User.posts)])
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    return templates.TemplateResponse(
-        request,
-        "user_posts.html",
-        {"user": user, "posts": user.posts, "title": f"Posts by {user.username}"},
-    )
-
-
-@app.exception_handler(StarletteHTTPException)
-def general_http_exception_handler(request: Request, exception: StarletteHTTPException):
-    message = exception.detail if exception.detail else "An error occurred."
-    if request.url.path.startswith("/api"):
-        return JSONResponse(status_code=exception.status_code, content={"detail": message}, headers=exception.headers)
-    return templates.TemplateResponse(request, "error.html", {"status_code": exception.status_code, "message": message}, status_code=exception.status_code)
-
-@app.exception_handler(RequestValidationError)
-def validation_exception_handler(request: Request, exception: RequestValidationError):
-    if request.url.path.startswith("/api"):
-        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content=jsonable_encoder({"detail": exception.errors()}))
-    return templates.TemplateResponse(request, "error.html", {"status_code": 422, "message": "Invalid request."}, status_code=422)
+app.include_router(pages_router)
