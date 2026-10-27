@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -7,10 +7,10 @@ from starlette import status
 from starlette.concurrency import run_in_threadpool
 
 from app.core.database import get_db
-from app.core.auth import COOKIE_NAME, check_origin, get_current_user, revoke_session, start_session
+from app.core.auth import COOKIE_NAME, check_origin, get_current_user, revoke_request_tokens, start_login
+from app.core.settings import settings
 from app.core.security import hash_password, verify_password
 from app.models.user import User
-from app.models.session import LoginSession
 from app.schemas.post import PostResponse
 from app.schemas.user import UserCreate, UserResponse, UserLogin, UserUpdate
 
@@ -62,8 +62,11 @@ async def login_user(user_login_schema: UserLogin, request: Request, response: R
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    await start_session(request, response, user, db)
+    token = await start_login(request, response, user, db)
     return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": settings.JWT_ACCESS_TOKEN_MINUTES * 60,
         "message": "Login successful",
         "id": user.id,
         "username": user.username,
@@ -80,7 +83,7 @@ async def current_profile(response: Response, user: User = Depends(get_current_u
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT,
              dependencies=[Depends(check_origin)])
 async def logout(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
-    await revoke_session(request, db)
+    await revoke_request_tokens(request, db)
     await db.commit()
     response.delete_cookie(COOKIE_NAME, path="/", httponly=True, samesite="lax",
                            secure=request.url.scheme == "https")
@@ -138,7 +141,7 @@ async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = 
     return user
 
 @router.delete("/{user_id}/delete", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user(user_id: int, db: AsyncSession = Depends(get_db),
+async def delete_user(user_id: int, request: Request, db: AsyncSession = Depends(get_db),
                       current_user: User = Depends(get_current_user)):
     user = await db.get(User, user_id)
     if not user:
@@ -149,7 +152,7 @@ async def delete_user(user_id: int, db: AsyncSession = Depends(get_db),
     if user.id != current_user.id:
         raise HTTPException(status_code=403, detail="You are not authorized to delete this user")
 
-    await db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))
+    await revoke_request_tokens(request, db)
     # The User.posts relationship cascades deletion to this user's posts.
     await db.delete(user)
     await db.commit()

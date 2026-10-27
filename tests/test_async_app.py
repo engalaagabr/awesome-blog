@@ -10,17 +10,23 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+import jwt
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # Keep importing the application independent of local .env credentials.
-with patch.dict(os.environ, {"DATABASE_URL": "sqlite+aiosqlite:///:memory:"}):
+with patch.dict(os.environ, {
+    "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
+    "JWT_SECRET_KEY": "test-only-signing-key-with-at-least-64-bytes-for-algorithm-rejection-tests",
+    "JWT_ACCESS_TOKEN_MINUTES": "30",
+}):
     from app import main
     from app.core import database
     from app.models.user import User
-    from app.models.session import LoginSession
-    from app.core.auth import COOKIE_NAME, token_hash
+    from app.models.revoked_token import RevokedToken
+    from app.core.auth import COOKIE_NAME, JWT_ALGORITHM, decode_access_token
+    from app.core.settings import settings
 
 
 class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
@@ -384,7 +390,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
     async def test_update_rejects_duplicate_email(self):
         await self.assert_update_conflict_rejected("email")
 
-    async def test_login_session_survives_new_client_and_logout_revokes_it(self):
+    async def test_jwt_survives_new_client_and_logout_revokes_it(self):
         user = await self.register(login=False)
         self.assertEqual((await self.client.get("/api/users/me")).status_code, 401)
         login = await self.login()
@@ -392,10 +398,16 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HttpOnly", login.headers["set-cookie"])
         self.assertIn("SameSite=lax", login.headers["set-cookie"])
         self.assertEqual(login.json()["id"], user["id"])
+        self.assertEqual(login.json()["access_token"], cookie)
+        self.assertEqual(login.json()["token_type"], "bearer")
+        self.assertEqual(login.json()["expires_in"], 1800)
+        self.assertEqual(login.headers["cache-control"], "no-store")
+        claims = decode_access_token(cookie)
+        self.assertEqual(claims["sub"], str(user["id"]))
+        self.assertEqual(claims["exp"] - claims["iat"], 1800)
+        self.assertNotIn("login_sessions", database.Base.metadata.tables)
         async with database.SessionLocal() as db:
-            session = await db.get(LoginSession, token_hash(cookie))
-            self.assertIsNotNone(session)
-            self.assertNotEqual(session.token_hash, cookie)
+            self.assertIsNone(await db.scalar(select(RevokedToken)))
         async with AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test",
                                cookies=self.client.cookies) as browser:
             profile = await browser.get("/api/users/me")
@@ -405,17 +417,106 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await browser.get("/api/users/me")).status_code, 401)
         self.assertIsNone(self.client.cookies.get(COOKIE_NAME))
 
-    async def test_expired_and_tampered_sessions_are_rejected(self):
+    async def test_invalid_jwts_are_rejected(self):
         await self.register()
-        cookie = self.client.cookies.get(COOKIE_NAME)
-        async with database.SessionLocal() as db:
-            session = await db.get(LoginSession, token_hash(cookie))
-            session.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-            await db.commit()
-        self.assertEqual((await self.client.get("/api/users/me")).status_code, 401)
+        token = self.client.cookies.get(COOKIE_NAME)
+        claims = decode_access_token(token)
+        key = settings.JWT_SECRET_KEY.get_secret_value()
+        invalid_claims = [
+            {**claims, "exp": int(datetime.now(UTC).timestamp()) - 1},
+            {**claims, "nbf": int(datetime.now(UTC).timestamp()) + 3600},
+            {**claims, "iat": int(datetime.now(UTC).timestamp()) + 3600},
+            {**claims, "iss": "another-app"},
+            {**claims, "aud": "another-api"},
+            {**claims, "sub": "not-a-user"},
+            {**claims, "sub": "99999999999999999999999999999"},
+            {**claims, "sub": "99999"},
+            {**claims, "sub": 1},
+            {**claims, "jti": ""},
+            {**claims, "ver": "0" * 64},
+            {**claims, "ver": 1},
+            {**claims, "exp": "tomorrow"},
+            {**claims, "iat": None},
+        ]
+        for required in ("sub", "ver", "jti", "iat", "nbf", "exp", "iss", "aud"):
+            invalid_claims.append({name: value for name, value in claims.items() if name != required})
+        invalid_tokens = [jwt.encode(payload, key, algorithm=JWT_ALGORITHM) for payload in invalid_claims]
+        invalid_tokens.extend([
+            "forged-token",
+            jwt.encode(claims, "different-signing-key-at-least-32-bytes", algorithm=JWT_ALGORITHM),
+            jwt.encode(claims, key, algorithm="HS384"),
+            jwt.encode(claims, "", algorithm="none"),
+        ])
+        # Change the subject without recomputing the signature.
+        forged = jwt.encode({**claims, "sub": "99999"}, key, algorithm=JWT_ALGORITHM)
+        invalid_tokens.append(forged.rsplit(".", 1)[0] + "." + token.rsplit(".", 1)[1])
         self.client.cookies.clear()
-        self.client.cookies.set(COOKIE_NAME, "forged-token")
-        self.assertEqual((await self.client.get("/api/users/me")).status_code, 401)
+        for index, invalid in enumerate(invalid_tokens):
+            with self.subTest(case=index):
+                for headers, cookies in [({"Authorization": f"Bearer {invalid}"}, {}),
+                                         ({}, {COOKIE_NAME: invalid})]:
+                    self.client.cookies.clear()
+                    self.client.cookies.update(cookies)
+                    response = await self.client.get("/api/users/me", headers=headers)
+                    self.assertEqual(response.status_code, 401, response.text)
+                    self.assertEqual(response.headers["www-authenticate"], "Bearer")
+
+    async def test_bearer_authentication_and_logout(self):
+        user = await self.register()
+        token = self.client.cookies.get(COOKIE_NAME)
+        self.client.cookies.clear()
+        headers = {"Authorization": f"Bearer {token}"}
+        response = await self.client.get("/api/users/me", headers=headers)
+        self.assertEqual(response.json(), user)
+        response = await self.client.post("/api/posts/", headers=headers,
+                                          json={"title": "JWT post", "content": "Body"})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["user_id"], user["id"])
+        for _ in range(2):
+            response = await self.client.post("/api/users/logout", headers=headers)
+            self.assertEqual(response.status_code, 204, response.text)
+        response = await self.client.get("/api/users/me", headers=headers)
+        self.assertEqual(response.status_code, 401)
+        async with database.SessionLocal() as db:
+            self.assertIsNotNone(await db.get(RevokedToken, decode_access_token(token)["jti"]))
+
+    async def test_invalid_authorization_does_not_fall_back_to_cookie(self):
+        await self.register()
+        for authorization in ("Bearer bad-token", "Basic invalid", "Bearer", ""):
+            response = await self.client.get("/api/users/me", headers={"Authorization": authorization})
+            self.assertEqual(response.status_code, 401, response.text)
+
+    async def test_logout_with_invalid_cookie_still_clears_it(self):
+        self.client.cookies.set(COOKIE_NAME, "old-opaque-session", domain="test.local", path="/")
+        response = await self.client.post("/api/users/logout")
+        self.assertEqual(response.status_code, 204)
+        self.assertIsNone(self.client.cookies.get(COOKIE_NAME))
+
+    async def test_password_change_invalidates_existing_jwts(self):
+        user = await self.register()
+        token = self.client.cookies.get(COOKIE_NAME)
+        response = await self.client.patch(f"/api/users/{user['id']}/update",
+                                           json={"password": "Changed2"})
+        self.assertEqual(response.status_code, 200)
+        response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(response.status_code, 401)
+        await self.login(password="Changed2")
+        self.assertEqual((await self.client.get("/api/users/me")).status_code, 200)
+
+    async def test_deleted_account_tokens_cannot_access_reused_user_id(self):
+        user = await self.register()
+        old_token = self.client.cookies.get(COOKIE_NAME)
+        # Log in independently so deletion only sees the second token.
+        self.client.cookies.clear()
+        await self.login()
+        response = await self.client.delete(f"/api/users/{user['id']}/delete")
+        self.assertEqual(response.status_code, 204)
+        self.client.cookies.clear()
+        replacement = await self.register("replacement")
+        self.assertEqual(replacement["id"], user["id"])
+        response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {old_token}"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual((await self.client.get("/api/users/me")).json(), replacement)
 
     async def test_mutations_require_login_and_ignore_claimed_author(self):
         user = await self.register()
@@ -463,13 +564,14 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
                                           headers={"Origin": "http://test"})
         self.assertEqual(response.status_code, 201, response.text)
 
-    async def test_new_login_rotates_session_and_https_cookie_is_secure(self):
+    async def test_new_login_rotates_jwt_and_https_cookie_is_secure(self):
         await self.register()
         old_cookie = self.client.cookies.get(COOKIE_NAME)
         await self.login()
         self.assertNotEqual(old_cookie, self.client.cookies.get(COOKIE_NAME))
-        async with database.SessionLocal() as db:
-            self.assertIsNone(await db.get(LoginSession, token_hash(old_cookie)))
+        response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {old_cookie}"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual((await self.client.get("/api/users/me")).status_code, 200)
         response = await self.client.post("https://test/api/users/login", json={
             "username": "alice", "password": "Password1",
         })
