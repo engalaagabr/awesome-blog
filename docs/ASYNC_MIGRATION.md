@@ -74,6 +74,8 @@ For SQLite, `.env` must use the async driver:
 DATABASE_URL=sqlite+aiosqlite:///./blog.db
 ```
 
+The JWT authentication added after this migration also requires `JWT_SECRET_KEY` in `.env` (at least 32 characters). Generate a private value with `python -c "import secrets; print(secrets.token_urlsafe(32))"`; see `.env.example` for all current settings.
+
 This points to the same SQLite file; there is no need to delete it. Run from the project root because the database and static/template paths are relative. The existing `app/media` directory must also be present for the media mount.
 
 ## Verify the conversion
@@ -85,6 +87,6 @@ python -m unittest discover -s tests -v
 
 The tests exercise startup/shutdown, post CRUD, author serialization, all database-backed HTML pages, login and password changes, profile updates, duplicate registration, missing resources, validation and ownership errors, user deletion cascades, concurrent reads, rollback after errors, and password work on worker threads. They use temporary database files and do not open your `blog.db`.
 
-Current test status: 15 of 17 tests pass. The two duplicate username/email update tests fail because the update endpoint returns HTTP 500 instead of a handled client error. These failures remain visible until conflict handling is implemented.
+The original migration had 15 of 17 tests passing. The duplicate username/email update failures were subsequently fixed with rollback and HTTP 409 handling. The suite has since expanded to cover JWT authentication; run the command above for current results.
 
 References: [SQLAlchemy asyncio documentation](https://docs.sqlalchemy.org/en/21/orm/extensions/asyncio.html) and [Starlette thread pool documentation](https://starlette.dev/threadpool/).
