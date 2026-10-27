@@ -2,8 +2,9 @@
 {% block content %}
   <article class="content-section py-3 px-4 mb-4">
     <h1>
-      <a class="article-title" href="#">Oops... {{ status_code }} Error</a>
+      Oops... {{ status_code }} Error
     </h1>
     <p class="article-content">{{ message }}</p>
+    <a class="btn btn-primary" href="{{ url_for('home') }}">Back to Home</a>
   </article>
 {% endblock content %}

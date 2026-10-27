@@ -23,5 +23,11 @@
         </div>
       </div>
     </article>
+  {% else %}
+    <div class="content-section py-3 px-4 mb-4">
+      <h1>No posts yet</h1>
+      <p>Share the first post with the community.</p>
+      <button type="button" class="btn btn-primary" data-new-post>Write a Post</button>
+    </div>
   {% endfor %}
 {% endblock content %}

@@ -6,7 +6,7 @@ class PostBase(BaseModel):
     content : str = Field(..., min_length=1)
 
 class PostCreate(PostBase):
-    user_id : int
+    pass
 
 
 # inherit from PostBase and add id and date_posted fields

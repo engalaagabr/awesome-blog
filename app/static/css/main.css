@@ -26,6 +26,14 @@
 }
 
 /* Base Styles */
+[hidden] {
+  display: none !important;
+}
+
+[data-form-error] {
+  white-space: pre-line;
+}
+
 body {
   font-family: var(--font-body);
   background: var(--color-bg-body);

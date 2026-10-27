@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
+from datetime import UTC, datetime, timedelta
 from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,8 @@ with patch.dict(os.environ, {"DATABASE_URL": "sqlite+aiosqlite:///:memory:"}):
     from app import main
     from app.core import database
     from app.models.user import User
+    from app.models.session import LoginSession
+    from app.core.auth import COOKIE_NAME, token_hash
 
 
 class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
@@ -32,7 +35,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         factory = async_sessionmaker(
             self.engine, autoflush=False, expire_on_commit=False
         )
-        self.stack.enter_context(patch.object(main, "engine", self.engine))
+        self.stack.enter_context(patch.object(database, "engine", self.engine))
         self.stack.enter_context(patch.object(database, "SessionLocal", factory))
         # Exercise the real startup, shutdown, and request session dependency.
         await self.stack.enter_async_context(main.app.router.lifespan_context(main.app))
@@ -40,7 +43,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
             AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test")
         )
 
-    async def register(self, username="alice"):
+    async def register(self, username="alice", login=True):
         response = await self.client.post("/api/users/register", json={
             "username": username,
             "email": f"{username}@example.com",
@@ -48,11 +51,22 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(response.status_code, 201, response.text)
         self.assertNotIn("password", response.json())
+        if login:
+            await self.login(username)
         return response.json()
 
+    async def login(self, username="alice", password="Password1"):
+        response = await self.client.post("/api/users/login", json={
+            "username": username, "password": password,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        return response
+
     async def create_post(self, user_id, title="Async post"):
+        profile = (await self.client.get(f"/api/users/{user_id}/profile")).json()
+        await self.login(profile["username"])
         response = await self.client.post("/api/posts/", json={
-            "title": title, "content": "Async content", "user_id": user_id,
+            "title": title, "content": "Async content",
         })
         self.assertEqual(response.status_code, 201, response.text)
         self.assertTrue(response.json()["date_posted"])
@@ -113,6 +127,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         await self.create_post(alice["id"])
         await self.create_post(alice["id"], "Another post")
         remaining = await self.create_post(bob["id"], "Bob's post")
+        await self.login("alice")
         response = await self.client.delete(f"/api/users/{alice['id']}/delete")
         self.assertEqual(response.status_code, 204, response.text)
         self.assertEqual(response.content, b"")
@@ -131,9 +146,10 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 400)
         post = await self.create_post(user["id"])
         url = f"/api/posts/{post['id']}"
+        other = await self.register("bob")
         for method, body in (("PATCH", {"title": "Forbidden"}), ("DELETE", None)):
             response = await self.client.request(method, url,
-                params={"user_id": user["id"] + 1}, json=body)
+                params={"user_id": user["id"]}, json=body)
             self.assertEqual(response.status_code, 403, response.text)
         for url in ("/api/posts/9999", "/api/users/9999/profile", "/api/users/9999/posts",
                     "/posts/9999", "/users/9999/posts"):
@@ -142,7 +158,8 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/api/posts/", json={
             "title": "Missing user", "content": "Content", "user_id": 9999,
         })
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["user_id"], other["id"])
         response = await self.client.get("/api/posts/not-an-int")
         self.assertEqual(response.status_code, 422)
         response = await self.client.get("/posts/not-an-int")
@@ -187,7 +204,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("app.api.endpoints.user.hash_password", hash_in_worker), \
              patch("app.api.endpoints.user.verify_password", verify_in_worker):
-            user = await self.register()
+            user = await self.register(login=False)
             response = await self.client.post("/api/users/login", json={
                 "username": "alice", "password": "Password1",
             })
@@ -200,6 +217,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_missing_resources_for_mutations(self):
+        await self.register()
         cases = [
             ("PATCH", "/api/posts/9999?user_id=1", {"title": "Missing"}, "Post not found"),
             ("DELETE", "/api/posts/9999?user_id=1", None, "Post not found"),
@@ -213,14 +231,11 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.json(), {"detail": detail})
 
     async def test_invalid_path_and_query_parameters(self):
+        await self.register()
         cases = [
             ("GET", "/api/posts/bad", None),
             ("PATCH", "/api/posts/bad?user_id=1", {"title": "Valid"}),
             ("DELETE", "/api/posts/bad?user_id=1", None),
-            ("PATCH", "/api/posts/1", {"title": "Valid"}),
-            ("DELETE", "/api/posts/1", None),
-            ("PATCH", "/api/posts/1?user_id=bad", {"title": "Valid"}),
-            ("DELETE", "/api/posts/1?user_id=bad", None),
             ("GET", "/api/users/bad/profile", None),
             ("GET", "/api/users/bad/posts", None),
             ("PATCH", "/api/users/bad/update", {"username": "valid"}),
@@ -238,6 +253,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("text/html", response.headers["content-type"])
 
     async def test_invalid_request_bodies(self):
+        await self.register()
         registration = {"username": "valid", "email": "valid@example.com", "password": "Password1"}
         invalid_users = [
             {},
@@ -327,7 +343,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 204, response.text)
         self.assertEqual(response.content, b"")
         response = await self.client.delete(f"/api/users/{user['id']}/delete")
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 401)
 
     async def test_documentation_static_files_and_unknown_routes(self):
         for url in ("/docs", "/redoc", "/openapi.json", "/static/css/main.css",
@@ -337,7 +353,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 200)
         schema = (await self.client.get("/openapi.json")).json()
         operations = sum(len(methods) for methods in schema["paths"].values())
-        self.assertEqual(operations, 11)
+        self.assertEqual(operations, 13)
         for url in ("/api/missing", "/missing", "/static/missing.css", "/media/missing.jpg"):
             with self.subTest(url=url):
                 response = await self.client.get(url)
@@ -353,7 +369,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         # Observe the HTTP 500 response if an unhandled database exception occurs.
         async with AsyncClient(
             transport=ASGITransport(app=main.app, raise_app_exceptions=False),
-            base_url="http://test",
+            base_url="http://test", cookies=self.client.cookies,
         ) as client:
             response = await client.patch(f"/api/users/{bob['id']}/update",
                                           json={field: alice[field]})
@@ -367,6 +383,97 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_update_rejects_duplicate_email(self):
         await self.assert_update_conflict_rejected("email")
+
+    async def test_login_session_survives_new_client_and_logout_revokes_it(self):
+        user = await self.register(login=False)
+        self.assertEqual((await self.client.get("/api/users/me")).status_code, 401)
+        login = await self.login()
+        cookie = self.client.cookies.get(COOKIE_NAME)
+        self.assertIn("HttpOnly", login.headers["set-cookie"])
+        self.assertIn("SameSite=lax", login.headers["set-cookie"])
+        self.assertEqual(login.json()["id"], user["id"])
+        async with database.SessionLocal() as db:
+            session = await db.get(LoginSession, token_hash(cookie))
+            self.assertIsNotNone(session)
+            self.assertNotEqual(session.token_hash, cookie)
+        async with AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test",
+                               cookies=self.client.cookies) as browser:
+            profile = await browser.get("/api/users/me")
+            self.assertEqual(profile.json(), user)
+            self.assertEqual(profile.headers["cache-control"], "no-store")
+            self.assertEqual((await self.client.post("/api/users/logout")).status_code, 204)
+            self.assertEqual((await browser.get("/api/users/me")).status_code, 401)
+        self.assertIsNone(self.client.cookies.get(COOKIE_NAME))
+
+    async def test_expired_and_tampered_sessions_are_rejected(self):
+        await self.register()
+        cookie = self.client.cookies.get(COOKIE_NAME)
+        async with database.SessionLocal() as db:
+            session = await db.get(LoginSession, token_hash(cookie))
+            session.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db.commit()
+        self.assertEqual((await self.client.get("/api/users/me")).status_code, 401)
+        self.client.cookies.clear()
+        self.client.cookies.set(COOKIE_NAME, "forged-token")
+        self.assertEqual((await self.client.get("/api/users/me")).status_code, 401)
+
+    async def test_mutations_require_login_and_ignore_claimed_author(self):
+        user = await self.register()
+        response = await self.client.post("/api/posts/", json={
+            "title": "Session author", "content": "Body", "user_id": 9999,
+        })
+        self.assertEqual(response.status_code, 201, response.text)
+        post = response.json()
+        self.assertEqual(post["user_id"], user["id"])
+        await self.client.post("/api/users/logout")
+        cases = [
+            ("POST", "/api/posts/", {"title": "No login", "content": "Body", "user_id": user["id"]}),
+            ("PATCH", f"/api/posts/{post['id']}?user_id={user['id']}", {"title": "No login"}),
+            ("DELETE", f"/api/posts/{post['id']}?user_id={user['id']}", None),
+            ("PATCH", f"/api/users/{user['id']}/update", {"username": "hijacked"}),
+            ("DELETE", f"/api/users/{user['id']}/delete", None),
+        ]
+        for method, url, body in cases:
+            with self.subTest(method=method, url=url):
+                response = await self.client.request(method, url, json=body)
+                self.assertEqual(response.status_code, 401, response.text)
+        self.assertEqual((await self.client.get(f"/api/posts/{post['id']}")).json(), post)
+
+    async def test_users_cannot_modify_other_accounts(self):
+        alice = await self.register()
+        await self.register("bob")
+        response = await self.client.patch(f"/api/users/{alice['id']}/update",
+                                           json={"password": "Hijacked1"})
+        self.assertEqual(response.status_code, 403)
+        response = await self.client.delete(f"/api/users/{alice['id']}/delete")
+        self.assertEqual(response.status_code, 403)
+        await self.login("alice")
+
+    async def test_cross_origin_writes_rejected(self):
+        await self.register()
+        for path, body in [
+            ("/api/users/login", {"username": "alice", "password": "Password1"}),
+            ("/api/users/register", {"username": "mallory", "email": "m@example.com", "password": "Password1"}),
+            ("/api/users/logout", None),
+            ("/api/posts/", {"title": "CSRF", "content": "Body"}),
+        ]:
+            response = await self.client.post(path, json=body, headers={"Origin": "https://other.example"})
+            self.assertEqual(response.status_code, 403, response.text)
+        response = await self.client.post("/api/posts/", json={"title": "Allowed", "content": "Body"},
+                                          headers={"Origin": "http://test"})
+        self.assertEqual(response.status_code, 201, response.text)
+
+    async def test_new_login_rotates_session_and_https_cookie_is_secure(self):
+        await self.register()
+        old_cookie = self.client.cookies.get(COOKIE_NAME)
+        await self.login()
+        self.assertNotEqual(old_cookie, self.client.cookies.get(COOKIE_NAME))
+        async with database.SessionLocal() as db:
+            self.assertIsNone(await db.get(LoginSession, token_hash(old_cookie)))
+        response = await self.client.post("https://test/api/users/login", json={
+            "username": "alice", "password": "Password1",
+        })
+        self.assertIn("Secure", response.headers["set-cookie"])
 
 
 if __name__ == "__main__":
