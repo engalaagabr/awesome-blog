@@ -7,7 +7,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.routers.post import router as posts_router
 from app.api.routers.user import router as users_router
@@ -18,8 +20,12 @@ from app.models.user import User
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    yield
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        yield
+    finally:
+        await engine.dispose()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -34,8 +40,8 @@ app.include_router(users_router)
 
 @app.get("/", include_in_schema=False, name="home")
 @app.get("/posts", include_in_schema=False, name="posts")
-def home(request: Request, db: Session = Depends(get_db)):
-    posts = db.query(Post).all()
+async def home(request: Request, db: AsyncSession = Depends(get_db)):
+    posts = (await db.scalars(select(Post))).all()
     return templates.TemplateResponse(
         request,
         "home.html",
@@ -43,9 +49,9 @@ def home(request: Request, db: Session = Depends(get_db)):
     )
 
 @app.get("/posts/{post_id}", include_in_schema=False)
-def post_page(request: Request, post_id: int, db: Session = Depends(get_db)):
+async def post_page(request: Request, post_id: int, db: AsyncSession = Depends(get_db)):
     # البحث عن مقال معين بواسطة الـ ID في قاعدة البيانات
-    post = db.query(Post).filter(Post.id == post_id).first()
+    post = await db.get(Post, post_id)
     if not post:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
 
@@ -57,8 +63,8 @@ def post_page(request: Request, post_id: int, db: Session = Depends(get_db)):
     )
 
 @app.get("/users/{user_id}/posts", include_in_schema=False)
-def user_posts(request: Request, user_id: int, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
+async def user_posts(request: Request, user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, user_id, options=[selectinload(User.posts)])
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
