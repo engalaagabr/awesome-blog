@@ -1,17 +1,20 @@
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 from starlette.concurrency import run_in_threadpool
 
 from app.core.database import get_db
-from app.core.auth import COOKIE_NAME, check_origin, get_current_user, revoke_request_tokens, start_login
-from app.core.settings import settings
+from app.core.auth import (
+    REFRESH_COOKIE_NAME, check_origin, clear_token_cookies, get_current_user,
+    refresh_login, revoke_request_tokens, start_login,
+)
 from app.core.security import hash_password, verify_password
 from app.models.user import User
+from app.models.refresh_token import RefreshToken
 from app.schemas.post import PostResponse
-from app.schemas.user import UserCreate, UserResponse, UserLogin, UserUpdate
+from app.schemas.user import RefreshTokenRequest, UserCreate, UserResponse, UserLogin, UserUpdate
 from app.utils.profile_images import MAX_IMAGE_BYTES, remove_profile_image, save_profile_image
 from app.utils.pagination import PaginationParams, paginate_posts
 
@@ -63,11 +66,9 @@ async def login_user(user_login_schema: UserLogin, request: Request, response: R
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = await start_login(request, response, user, db)
+    tokens = await start_login(request, response, user, db)
     return {
-        "access_token": token,
-        "token_type": "bearer",
-        "expires_in": settings.JWT_ACCESS_TOKEN_MINUTES * 60,
+        **tokens,
         "message": "Login successful",
         "id": user.id,
         "username": user.username,
@@ -75,6 +76,21 @@ async def login_user(user_login_schema: UserLogin, request: Request, response: R
         "image_file": user.image_file,
         "image_path": user.image_path,
     }
+
+
+@router.post("/refresh", dependencies=[Depends(check_origin)])
+async def refresh_tokens(
+    request: Request, response: Response,
+    body: RefreshTokenRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Rotate the refresh cookie, or the refresh_token supplied in a JSON body.
+
+    API clients must replace both stored tokens with the returned pair. Rotation
+    preserves the original session expiry; reusing a token revokes that session.
+    """
+    token = body.refresh_token if body is not None else request.cookies.get(REFRESH_COOKIE_NAME)
+    return await refresh_login(token, request, response, db)
 
 
 @router.get("/me", response_model=UserResponse)
@@ -126,11 +142,16 @@ async def reset_profile_image(
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT,
              dependencies=[Depends(check_origin)])
-async def logout(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
-    await revoke_request_tokens(request, db)
+async def logout(request: Request, response: Response, body: RefreshTokenRequest | None = None,
+                 db: AsyncSession = Depends(get_db)):
+    """Revoke the session and clear both cookies.
+
+    Clients without cookies can supply refresh_token in JSON, including when
+    their access token has already expired.
+    """
+    await revoke_request_tokens(request, db, body.refresh_token if body else None)
     await db.commit()
-    response.delete_cookie(COOKIE_NAME, path="/", httponly=True, samesite="lax",
-                           secure=request.url.scheme == "https")
+    clear_token_cookies(request, response)
 
 # get user posts
 @router.get("/{user_id}/posts", response_model=list[PostResponse])
@@ -182,6 +203,9 @@ async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = 
     if user_update.password is not None:
         hashed_pwd = await run_in_threadpool(hash_password, user_update.password)
         user.password = hashed_pwd
+        await db.execute(update(RefreshToken).where(
+            RefreshToken.user_id == user.id,
+        ).values(revoked=True))
 
     try:
         await db.commit()
@@ -195,7 +219,7 @@ async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = 
     return user
 
 @router.delete("/{user_id}/delete", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user(user_id: int, request: Request, db: AsyncSession = Depends(get_db),
+async def delete_user(user_id: int, request: Request, response: Response, db: AsyncSession = Depends(get_db),
                       current_user: User = Depends(get_current_user)):
     user = await db.get(User, user_id)
     if not user:
@@ -207,8 +231,10 @@ async def delete_user(user_id: int, request: Request, db: AsyncSession = Depends
         raise HTTPException(status_code=403, detail="You are not authorized to delete this user")
 
     await revoke_request_tokens(request, db)
+    await db.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
     previous_image = user.image_file
     # The User.posts relationship cascades deletion to this user's posts.
     await db.delete(user)
     await db.commit()
+    clear_token_cookies(request, response)
     await run_in_threadpool(remove_profile_image, previous_image)

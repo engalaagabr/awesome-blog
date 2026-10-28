@@ -22,13 +22,17 @@ with patch.dict(os.environ, {
     "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
     "JWT_SECRET_KEY": "test-only-signing-key-with-at-least-64-bytes-for-algorithm-rejection-tests",
     "JWT_ACCESS_TOKEN_MINUTES": "30",
+    "REFRESH_TOKEN_DAYS": "7",
 }):
     from app import main
     from app.core import database
     from app.models.user import User
     from app.models.post import Post
     from app.models.revoked_token import RevokedToken
-    from app.core.auth import COOKIE_NAME, JWT_ALGORITHM, decode_access_token
+    from app.models.refresh_token import RefreshToken
+    from app.core.auth import (
+        COOKIE_NAME, REFRESH_COOKIE_NAME, JWT_ALGORITHM, decode_access_token, refresh_token_hash,
+    )
     from app.core.settings import settings
     from app.utils import profile_images
 
@@ -439,14 +443,14 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 401)
 
     async def test_documentation_static_files_and_unknown_routes(self):
-        for url in ("/docs", "/redoc", "/openapi.json", "/static/css/main.css",
+        for url in ("/docs", "/redoc", "/openapi.json", "/static/css/main.css", "/static/js/api.js",
                     "/static/profile_pics/default.jpg"):
             with self.subTest(url=url):
                 response = await self.client.get(url)
                 self.assertEqual(response.status_code, 200)
         schema = (await self.client.get("/openapi.json")).json()
         operations = sum(len(methods) for methods in schema["paths"].values())
-        self.assertEqual(operations, 15)
+        self.assertEqual(operations, 16)
         for url in ("/api/missing", "/missing", "/static/missing.css", "/media/missing.jpg"):
             with self.subTest(url=url):
                 response = await self.client.get(url)
@@ -486,6 +490,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SameSite=lax", login.headers["set-cookie"])
         self.assertEqual(login.json()["id"], user["id"])
         self.assertEqual(login.json()["access_token"], cookie)
+        self.assertEqual(login.json()["refresh_token"], self.client.cookies.get(REFRESH_COOKIE_NAME))
         self.assertEqual(login.json()["token_type"], "bearer")
         self.assertEqual(login.json()["expires_in"], 1800)
         self.assertEqual(login.headers["cache-control"], "no-store")
@@ -522,6 +527,9 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
             {**claims, "jti": ""},
             {**claims, "ver": "0" * 64},
             {**claims, "ver": 1},
+            {**claims, "sid": []},
+            {**claims, "sid": ""},
+            {**claims, "sid": "x" * 65},
             {**claims, "exp": "tomorrow"},
             {**claims, "iat": None},
         ]
@@ -582,10 +590,13 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
     async def test_password_change_invalidates_existing_jwts(self):
         user = await self.register()
         token = self.client.cookies.get(COOKIE_NAME)
+        refresh_token = self.client.cookies.get(REFRESH_COOKIE_NAME)
         response = await self.client.patch(f"/api/users/{user['id']}/update",
                                            json={"password": "Changed2"})
         self.assertEqual(response.status_code, 200)
         response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(response.status_code, 401)
+        response = await self.client.post("/api/users/refresh", json={"refresh_token": refresh_token})
         self.assertEqual(response.status_code, 401)
         await self.login(password="Changed2")
         self.assertEqual((await self.client.get("/api/users/me")).status_code, 200)
@@ -593,6 +604,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
     async def test_deleted_account_tokens_cannot_access_reused_user_id(self):
         user = await self.register()
         old_token = self.client.cookies.get(COOKIE_NAME)
+        old_refresh = self.client.cookies.get(REFRESH_COOKIE_NAME)
         # Log in independently so deletion only sees the second token.
         self.client.cookies.clear()
         await self.login()
@@ -604,6 +616,8 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {old_token}"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual((await self.client.get("/api/users/me")).json(), replacement)
+        response = await self.client.post("/api/users/refresh", json={"refresh_token": old_refresh})
+        self.assertEqual(response.status_code, 401)
 
     async def test_mutations_require_login_and_ignore_claimed_author(self):
         user = await self.register()
@@ -643,6 +657,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
             ("/api/users/login", {"username": "alice", "password": "Password1"}),
             ("/api/users/register", {"username": "mallory", "email": "m@example.com", "password": "Password1"}),
             ("/api/users/logout", None),
+            ("/api/users/refresh", None),
             ("/api/posts/", {"title": "CSRF", "content": "Body"}),
         ]:
             response = await self.client.post(path, json=body, headers={"Origin": "https://other.example"})
@@ -654,15 +669,149 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_login_rotates_jwt_and_https_cookie_is_secure(self):
         await self.register()
         old_cookie = self.client.cookies.get(COOKIE_NAME)
+        old_refresh = self.client.cookies.get(REFRESH_COOKIE_NAME)
         await self.login()
         self.assertNotEqual(old_cookie, self.client.cookies.get(COOKIE_NAME))
         response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {old_cookie}"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual((await self.client.get("/api/users/me")).status_code, 200)
+        response = await self.client.post("/api/users/refresh", json={"refresh_token": old_refresh})
         self.assertEqual(response.status_code, 401)
         self.assertEqual((await self.client.get("/api/users/me")).status_code, 200)
         response = await self.client.post("https://test/api/users/login", json={
             "username": "alice", "password": "Password1",
         })
         self.assertIn("Secure", response.headers["set-cookie"])
+        for cookie in response.headers.get_list("set-cookie"):
+            self.assertIn("Secure", cookie)
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn("SameSite=lax", cookie)
+
+    async def test_refresh_after_access_expiry_rotates_and_restores_access(self):
+        user = await self.register()
+        old_access = self.client.cookies.get(COOKIE_NAME)
+        old_refresh = self.client.cookies.get(REFRESH_COOKIE_NAME)
+        async with database.SessionLocal() as db:
+            stored = await db.get(RefreshToken, refresh_token_hash(old_refresh))
+            self.assertIsNotNone(stored)
+            self.assertNotEqual(stored.token_hash, old_refresh)
+            expiry = stored.expires_at
+        claims = decode_access_token(old_access)
+        now = int(datetime.now(UTC).timestamp())
+        expired = jwt.encode({**claims, "iat": now - 3600, "nbf": now - 3600, "exp": now - 1},
+                             settings.JWT_SECRET_KEY.get_secret_value(), algorithm=JWT_ALGORITHM)
+        self.client.cookies.set(COOKIE_NAME, expired, domain="test.local", path="/")
+        self.assertEqual((await self.client.get("/api/users/me")).status_code, 401)
+        response = await self.client.post("/api/users/refresh")
+        self.assertEqual(response.status_code, 200, response.text)
+        tokens = response.json()
+        self.assertNotEqual(tokens["access_token"], old_access)
+        self.assertNotEqual(tokens["refresh_token"], old_refresh)
+        self.assertEqual(self.client.cookies.get(REFRESH_COOKIE_NAME), tokens["refresh_token"])
+        self.assertEqual(tokens["token_type"], "bearer")
+        self.assertEqual(tokens["expires_in"], 1800)
+        self.assertGreater(tokens["refresh_expires_in"], 6 * 86400)
+        self.assertLessEqual(tokens["refresh_expires_in"], 7 * 86400)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual((await self.client.get("/api/users/me")).json(), user)
+        response = await self.client.post("/api/posts/", json={"title": "Renewed", "content": "Body"})
+        self.assertEqual(response.status_code, 201, response.text)
+        async with database.SessionLocal() as db:
+            self.assertTrue((await db.get(RefreshToken, refresh_token_hash(old_refresh))).used)
+            new = await db.get(RefreshToken, refresh_token_hash(tokens["refresh_token"]))
+            self.assertEqual(new.expires_at, expiry)  # Rotation does not extend the session indefinitely.
+            self.assertEqual(new.session_id, claims["sid"])
+
+    async def test_replaying_refresh_revokes_whole_session_only(self):
+        await self.register()
+        old_access = self.client.cookies.get(COOKIE_NAME)
+        old_refresh = self.client.cookies.get(REFRESH_COOKIE_NAME)
+        rotated = await self.client.post("/api/users/refresh")
+        new_access = rotated.json()["access_token"]
+        new_refresh = rotated.json()["refresh_token"]
+        async with AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test") as other:
+            await other.post("/api/users/login", json={"username": "alice", "password": "Password1"})
+            replay = await self.client.post("/api/users/refresh", json={"refresh_token": old_refresh})
+            self.assertEqual(replay.status_code, 401)
+            self.assertEqual(replay.headers["cache-control"], "no-store")
+            for token in (old_access, new_access):
+                response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {token}"})
+                self.assertEqual(response.status_code, 401)
+            response = await self.client.post("/api/users/refresh", json={"refresh_token": new_refresh})
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual((await other.get("/api/users/me")).status_code, 200)
+
+    async def test_refresh_rejects_missing_invalid_and_access_tokens(self):
+        await self.register()
+        access = self.client.cookies.get(COOKIE_NAME)
+        refresh = self.client.cookies.get(REFRESH_COOKIE_NAME)
+        response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {refresh}"})
+        self.assertEqual(response.status_code, 401)
+        # Oversized credentials fail request validation before authentication.
+        for invalid, expected_status in ((access, 422), ("invalid-refresh", 401)):
+            # An explicit body must not fall back to the valid browser cookie.
+            response = await self.client.post("/api/users/refresh", json={"refresh_token": invalid})
+            self.assertEqual(response.status_code, expected_status)
+        self.client.cookies.clear()
+        self.assertEqual((await self.client.post("/api/users/refresh")).status_code, 401)
+        response = await self.client.post("/api/users/refresh", json={"refresh_token": refresh})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.client.cookies.clear()
+        response = await self.client.get("/api/users/me", headers={
+            "Authorization": f"Bearer {response.json()['access_token']}",
+        })
+        self.assertEqual(response.status_code, 200)
+
+    async def test_expired_refresh_token_requires_login(self):
+        await self.register()
+        refresh = self.client.cookies.get(REFRESH_COOKIE_NAME)
+        async with database.SessionLocal() as db:
+            stored = await db.get(RefreshToken, refresh_token_hash(refresh))
+            stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db.commit()
+        response = await self.client.post("/api/users/refresh")
+        self.assertEqual(response.status_code, 401)
+
+    async def test_logout_without_access_cookie_revokes_refresh(self):
+        await self.register()
+        old_access = self.client.cookies.get(COOKIE_NAME)
+        refresh = self.client.cookies.get(REFRESH_COOKIE_NAME)
+        self.client.cookies.delete(COOKIE_NAME)
+        response = await self.client.post("/api/users/logout")
+        self.assertEqual(response.status_code, 204)
+        self.assertIsNone(self.client.cookies.get(COOKIE_NAME))
+        self.assertIsNone(self.client.cookies.get(REFRESH_COOKIE_NAME))
+        response = await self.client.post("/api/users/refresh", json={"refresh_token": refresh})
+        self.assertEqual(response.status_code, 401)
+        response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {old_access}"})
+        self.assertEqual(response.status_code, 401)
+
+    async def test_api_logout_revokes_rotated_session_tokens(self):
+        await self.register()
+        old_access = self.client.cookies.get(COOKIE_NAME)
+        response = await self.client.post("/api/users/refresh")
+        access, refresh = response.json()["access_token"], response.json()["refresh_token"]
+        self.client.cookies.clear()
+        response = await self.client.post("/api/users/logout", json={"refresh_token": refresh})
+        self.assertEqual(response.status_code, 204)
+        for token in (old_access, access):
+            response = await self.client.get("/api/users/me", headers={"Authorization": f"Bearer {token}"})
+            self.assertEqual(response.status_code, 401)
+        response = await self.client.post("/api/users/refresh", json={"refresh_token": refresh})
+        self.assertEqual(response.status_code, 401)
+
+    async def test_concurrent_refresh_cannot_use_token_twice(self):
+        await self.register()
+        refresh = self.client.cookies.get(REFRESH_COOKIE_NAME)
+        async def rotate():
+            async with AsyncClient(transport=ASGITransport(app=main.app), base_url="http://test") as client:
+                return await client.post("/api/users/refresh", json={"refresh_token": refresh})
+        responses = await asyncio.gather(rotate(), rotate())
+        self.assertEqual(sorted(response.status_code for response in responses), [200, 401])
+        winner = next(response.json() for response in responses if response.status_code == 200)
+        # The duplicate request is a replay, so even the newly issued token is revoked.
+        response = await self.client.post("/api/users/refresh", json={"refresh_token": winner["refresh_token"]})
+        self.assertEqual(response.status_code, 401)
 
     def picture(self, format="PNG", size=(800, 400)):
         output = BytesIO()

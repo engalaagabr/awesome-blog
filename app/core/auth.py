@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -5,16 +6,18 @@ from datetime import UTC, datetime, timedelta
 import jwt
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import delete
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.settings import settings
 from app.models.revoked_token import RevokedToken
+from app.models.refresh_token import RefreshToken
 from app.models.user import User
 
 COOKIE_NAME = "blog_session"
+REFRESH_COOKIE_NAME = "blog_refresh"
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = "fastapi-blog"
 JWT_AUDIENCE = "fastapi-blog-api"
@@ -45,11 +48,12 @@ def credential_tag(user: User) -> str:
     ).hex()
 
 
-def create_access_token(user: User) -> str:
+def create_access_token(user: User, session_id: str) -> str:
     now = datetime.now(UTC)
     return jwt.encode(
         {
             "sub": str(user.id),
+            "sid": session_id,
             "ver": credential_tag(user),
             "jti": secrets.token_urlsafe(32),
             "iat": now,
@@ -83,7 +87,22 @@ def decode_access_token(token: str) -> dict:
         raise jwt.InvalidTokenError("Invalid timestamp")
     if claims["exp"] <= claims["iat"]:
         raise jwt.InvalidTokenError("Invalid token lifetime")
+    # Tokens issued before refresh support remain valid until their original expiry.
+    if "sid" in claims and (
+        not isinstance(claims["sid"], str) or not 0 < len(claims["sid"]) <= 64
+    ):
+        raise jwt.InvalidTokenError("Invalid session ID")
     return claims
+
+
+def refresh_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def revoke_session(session_id: str, db: AsyncSession):
+    await db.execute(update(RefreshToken).where(
+        RefreshToken.session_id == session_id,
+    ).values(revoked=True))
 
 
 async def revoke_token(token: str | None, db: AsyncSession):
@@ -94,6 +113,8 @@ async def revoke_token(token: str | None, db: AsyncSession):
         expires_at = datetime.fromtimestamp(claims["exp"], UTC)
     except (jwt.InvalidTokenError, ValueError, TypeError, OverflowError):
         return
+    if "sid" in claims:
+        await revoke_session(claims["sid"], db)
     # The savepoint makes repeated/concurrent logout requests idempotent.
     try:
         async with db.begin_nested():
@@ -103,23 +124,92 @@ async def revoke_token(token: str | None, db: AsyncSession):
         pass
 
 
-async def revoke_request_tokens(request: Request, db: AsyncSession):
+async def revoke_request_tokens(request: Request, db: AsyncSession, refresh_token: str | None = None):
     # Revoke both transports when an API client also sends a browser cookie.
     for token in {request_token(request), request.cookies.get(COOKIE_NAME)}:
         await revoke_token(token, db)
+    for token in {refresh_token, request.cookies.get(REFRESH_COOKIE_NAME)}:
+        if token:
+            stored = await db.get(RefreshToken, refresh_token_hash(token))
+            if stored:
+                await revoke_session(stored.session_id, db)
     await db.execute(delete(RevokedToken).where(RevokedToken.expires_at <= datetime.now(UTC)))
+    await db.execute(delete(RefreshToken).where(
+        RefreshToken.expires_at <= datetime.now(UTC),
+    ).execution_options(synchronize_session=False))
 
 
-async def start_login(request: Request, response: Response, user: User, db: AsyncSession) -> str:
-    await revoke_request_tokens(request, db)
-    await db.commit()
-    token = create_access_token(user)
+def set_token_cookies(request: Request, response: Response, tokens: dict):
     response.headers["Cache-Control"] = "no-store"
     response.set_cookie(
-        COOKIE_NAME, token, max_age=settings.JWT_ACCESS_TOKEN_MINUTES * 60, httponly=True,
+        COOKIE_NAME, tokens["access_token"], max_age=tokens["expires_in"], httponly=True,
         secure=request.url.scheme == "https", samesite="lax", path="/",
     )
-    return token
+    response.set_cookie(
+        REFRESH_COOKIE_NAME, tokens["refresh_token"], max_age=tokens["refresh_expires_in"], httponly=True,
+        secure=request.url.scheme == "https", samesite="lax", path="/",
+    )
+
+
+def clear_token_cookies(request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    for name in (COOKIE_NAME, REFRESH_COOKIE_NAME):
+        response.delete_cookie(name, path="/", httponly=True, samesite="lax",
+                               secure=request.url.scheme == "https")
+
+
+def issue_token_pair(user: User, db: AsyncSession, session_id: str, expires_at: datetime) -> dict:
+    refresh_token = secrets.token_urlsafe(48)
+    db.add(RefreshToken(
+        token_hash=refresh_token_hash(refresh_token), session_id=session_id,
+        user_id=user.id, credential_version=credential_tag(user), expires_at=expires_at,
+    ))
+    return {
+        "access_token": create_access_token(user, session_id),
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": settings.JWT_ACCESS_TOKEN_MINUTES * 60,
+        "refresh_expires_in": max(0, int((expires_at - datetime.now(UTC)).total_seconds())),
+    }
+
+
+async def start_login(request: Request, response: Response, user: User, db: AsyncSession) -> dict:
+    await revoke_request_tokens(request, db)
+    tokens = issue_token_pair(user, db, secrets.token_urlsafe(32),
+                              datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_DAYS))
+    await db.commit()
+    set_token_cookies(request, response, tokens)
+    return tokens
+
+
+async def refresh_login(token: str | None, request: Request, response: Response, db: AsyncSession) -> dict:
+    unauthorized = HTTPException(
+        status_code=401, detail="Please log in to continue",
+        headers={"WWW-Authenticate": "Bearer", "Cache-Control": "no-store"},
+    )
+    stored = await db.get(RefreshToken, refresh_token_hash(token)) if token else None
+    if stored is None:
+        raise unauthorized
+    # Claim the token atomically so two requests cannot both rotate it successfully.
+    claimed = await db.execute(update(RefreshToken).where(
+        RefreshToken.token_hash == stored.token_hash,
+        RefreshToken.used.is_(False), RefreshToken.revoked.is_(False),
+        RefreshToken.expires_at > datetime.now(UTC),
+    ).values(used=True).execution_options(synchronize_session=False))
+    user = await db.get(User, stored.user_id)
+    if claimed.rowcount != 1 or user is None or not hmac.compare_digest(
+        stored.credential_version, credential_tag(user)
+    ):
+        # Reuse of a rotated token invalidates its entire session, including access JWTs.
+        await revoke_session(stored.session_id, db)
+        await db.commit()
+        raise unauthorized
+    # SQLite returns naive datetimes; the stored values are always UTC.
+    expires_at = stored.expires_at.replace(tzinfo=UTC)
+    tokens = issue_token_pair(user, db, stored.session_id, expires_at)
+    await db.commit()
+    set_token_cookies(request, response, tokens)
+    return tokens
 
 
 async def get_current_user(
@@ -142,6 +232,15 @@ async def get_current_user(
         raise unauthorized from None
     if await db.get(RevokedToken, claims["jti"]) is not None:
         raise unauthorized
+    if "sid" in claims:
+        active = await db.scalar(select(RefreshToken.token_hash).where(
+            RefreshToken.session_id == claims["sid"],
+            RefreshToken.user_id == int(claims["sub"]),
+            RefreshToken.used.is_(False), RefreshToken.revoked.is_(False),
+            RefreshToken.expires_at > datetime.now(UTC),
+        ).limit(1))
+        if active is None:
+            raise unauthorized
     user = await db.get(User, int(claims["sub"]))
     if user is None or not hmac.compare_digest(claims["ver"], credential_tag(user)):
         raise unauthorized

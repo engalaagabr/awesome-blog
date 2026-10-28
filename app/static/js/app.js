@@ -1,4 +1,5 @@
-import { getErrorMessage, hideModal, showModal } from "./utils.js?v=3";
+import { hideModal, showModal } from "./utils.js?v=3";
+import { createApi } from "./api.js?v=1";
 
 const homeUrl = document.querySelector(".navbar-brand").href;
 const pageMessage = document.getElementById("pageMessage");
@@ -46,30 +47,7 @@ function updateUser(user) {
     renderAccount(user, previousUser);
 }
 
-async function api(path, { method = "GET", body } = {}) {
-    let response;
-    const isForm = body instanceof FormData;
-    try {
-        response = await fetch(new URL(`api/${path}`, homeUrl), {
-            method,
-            credentials: "same-origin",
-            cache: "no-store",
-            headers: body === undefined || isForm ? {} : { "Content-Type": "application/json" },
-            body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
-        });
-    } catch {
-        throw new Error("Unable to reach the server. Please check your connection and try again.");
-    }
-    if (response.status === 204) return null;
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-        if (response.status === 401 && path !== "users/login") updateUser(null);
-        const error = new Error(getErrorMessage(data));
-        error.status = response.status;
-        throw error;
-    }
-    return data;
-}
+const api = createApi(homeUrl, () => updateUser(null));
 
 const sessionReady = api("users/me").then(updateUser).catch(error => {
     updateUser(null);
