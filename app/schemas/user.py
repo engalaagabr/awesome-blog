@@ -14,6 +14,7 @@ class UserBase(BaseModel):
         return value
 
 class UserCreate(UserBase):
+    image_file: None = Field(default=None, description="Upload pictures using PUT /api/users/me/image after login.")
     password: str = Field(..., min_length=4, max_length=100)
 
     @field_validator("password")
@@ -49,7 +50,7 @@ class UserLogin(BaseModel):
 class UserUpdate(BaseModel):
     username: str | None = Field(None, min_length=3, max_length=50)
     email: str | None = Field(None, min_length=1, max_length=120)
-    image_file: str | None = Field(None, min_length=1, max_length=200)
+    image_file: None = Field(default=None, description="Set to null to reset; upload using PUT /api/users/me/image.")
     password: str | None = Field(None, min_length=4, max_length=100)
 
     @field_validator("username")

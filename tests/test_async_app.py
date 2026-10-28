@@ -7,13 +7,15 @@ import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from contextlib import AsyncExitStack
+from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import jwt
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Keep importing the application independent of local .env credentials.
 with patch.dict(os.environ, {
@@ -27,6 +29,7 @@ with patch.dict(os.environ, {
     from app.models.revoked_token import RevokedToken
     from app.core.auth import COOKIE_NAME, JWT_ALGORITHM, decode_access_token
     from app.core.settings import settings
+    from app.utils import profile_images
 
 
 class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
@@ -35,6 +38,12 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         await self.stack.__aenter__()
         self.addAsyncCleanup(self.stack.aclose)
         directory = self.stack.enter_context(tempfile.TemporaryDirectory())
+        media_directory = Path(directory) / "media"
+        self.profile_directory = media_directory / "profile_pics"
+        self.profile_directory.mkdir(parents=True)
+        self.stack.enter_context(patch.object(profile_images, "PROFILE_PICS_DIR", self.profile_directory))
+        media_app = next(route.app for route in main.app.routes if getattr(route, "path", None) == "/media")
+        self.stack.enter_context(patch.object(media_app, "all_directories", [str(media_directory)]))
         self.engine = create_async_engine(
             f"sqlite+aiosqlite:///{Path(directory) / 'test.db'}"
         )
@@ -114,10 +123,10 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get(f"/api/users/{user['id']}/profile")
         self.assertEqual(response.json(), user)
         response = await self.client.patch(f"/api/users/{user['id']}/update", json={
-            "username": "alice_new", "password": "Changed2", "image_file": "avatar.jpg",
+            "username": "alice_new", "password": "Changed2",
         })
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["image_path"], "/media/profile_pics/avatar.jpg")
+        self.assertEqual(response.json()["image_path"], "/static/profile_pics/default.jpg")
         for password, code in (("Password1", 401), ("Changed2", 200)):
             response = await self.client.post("/api/users/login", json={
                 "username": "alice_new", "password": password,
@@ -359,7 +368,7 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 200)
         schema = (await self.client.get("/openapi.json")).json()
         operations = sum(len(methods) for methods in schema["paths"].values())
-        self.assertEqual(operations, 13)
+        self.assertEqual(operations, 15)
         for url in ("/api/missing", "/missing", "/static/missing.css", "/media/missing.jpg"):
             with self.subTest(url=url):
                 response = await self.client.get(url)
@@ -576,6 +585,148 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
             "username": "alice", "password": "Password1",
         })
         self.assertIn("Secure", response.headers["set-cookie"])
+
+    def picture(self, format="PNG", size=(800, 400)):
+        output = BytesIO()
+        Image.new("RGB", size, "steelblue").save(output, format=format)
+        return output.getvalue()
+
+    async def upload_picture(self, data=None, filename="portrait.png", content_type="image/png", **kwargs):
+        return await self.client.put("/api/users/me/image", files={
+            "image": (filename, self.picture() if data is None else data, content_type),
+        }, **kwargs)
+
+    async def test_upload_replace_and_reset_profile_picture(self):
+        user = await self.register()
+        post = await self.create_post(user["id"])
+        previous = None
+        for format, content_type in (("JPEG", "image/jpeg"), ("PNG", "image/png"), ("WEBP", "image/webp")):
+            with self.subTest(format=format):
+                response = await self.upload_picture(self.picture(format), "../../avatar.jpg", content_type)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                profile = response.json()
+                self.assertEqual(profile["id"], user["id"])
+                self.assertRegex(profile["image_file"], r"^[a-f0-9]{32}\.png$")
+                self.assertNotEqual(profile["image_file"], previous)
+                self.assertNotIn("password", profile)
+                self.assertEqual((await self.client.get("/api/users/me")).json(), profile)
+                self.assertEqual((await self.login()).json()["image_path"], profile["image_path"])
+                served = await self.client.get(profile["image_path"])
+                self.assertEqual(served.status_code, 200)
+                self.assertEqual(served.headers["content-type"], "image/png")
+                with Image.open(BytesIO(served.content)) as image:
+                    self.assertEqual(image.size, (512, 256))
+                for url in ("/", f"/posts/{post['id']}", f"/users/{user['id']}/posts"):
+                    page = await self.client.get(url)
+                    self.assertIn(profile["image_path"], page.text)
+                    self.assertIn('href="http://test/account"', page.text)
+                if previous:
+                    self.assertFalse((self.profile_directory / previous).exists())
+                self.assertEqual(len(list(self.profile_directory.iterdir())), 1)
+                previous = profile["image_file"]
+        for _ in range(2):
+            reset = await self.client.delete("/api/users/me/image")
+            self.assertEqual(reset.status_code, 200, reset.text)
+            self.assertEqual(reset.json()["image_path"], "/static/profile_pics/default.jpg")
+            self.assertIsNone(reset.json()["image_file"])
+        self.assertEqual(list(self.profile_directory.iterdir()), [])
+        self.assertEqual((await self.client.get(reset.json()["image_path"])).status_code, 200)
+        self.assertEqual((await self.client.get(profile["image_path"])).status_code, 404)
+
+    async def test_invalid_uploads_preserve_existing_picture(self):
+        await self.register()
+        profile = (await self.upload_picture()).json()
+        invalid = [b"", b"not an image", b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+                   self.picture("GIF"), self.picture()[:40]]
+        for data in invalid:
+            response = await self.upload_picture(data)
+            self.assertEqual(response.status_code, 400, response.text)
+        response = await self.upload_picture(b"x" * (profile_images.MAX_IMAGE_BYTES + 1))
+        self.assertEqual(response.status_code, 413, response.text)
+        with patch.object(profile_images, "MAX_IMAGE_PIXELS", 100):
+            response = await self.upload_picture(self.picture(size=(11, 10)))
+            self.assertEqual(response.status_code, 400, response.text)
+        missing = await self.client.put("/api/users/me/image")
+        self.assertEqual(missing.status_code, 422)
+        self.assertEqual((await self.client.get("/api/users/me")).json(), profile)
+        self.assertEqual([path.name for path in self.profile_directory.iterdir()], [profile["image_file"]])
+
+    async def test_picture_updates_require_login_and_same_origin(self):
+        alice = await self.register()
+        original = (await self.upload_picture()).json()
+        token = self.client.cookies.get(COOKIE_NAME)
+        self.client.cookies.clear()
+        self.assertEqual((await self.upload_picture()).status_code, 401)
+        self.assertEqual((await self.client.delete("/api/users/me/image")).status_code, 401)
+        headers = {"Authorization": f"Bearer {token}", "Origin": "https://other.example"}
+        self.assertEqual((await self.upload_picture(headers=headers)).status_code, 403)
+        self.assertEqual((await self.client.delete("/api/users/me/image", headers=headers)).status_code, 403)
+        headers["Origin"] = "http://test"
+        self.assertEqual((await self.upload_picture(headers=headers)).status_code, 200)
+        alice_profile = (await self.client.get(f"/api/users/{alice['id']}/profile")).json()
+        await self.register("bob")
+        await self.upload_picture()
+        await self.client.delete("/api/users/me/image")
+        self.assertEqual((await self.client.get(f"/api/users/{alice['id']}/profile")).json(), alice_profile)
+        self.assertTrue((self.profile_directory / alice_profile["image_file"]).exists())
+        self.assertFalse((self.profile_directory / original["image_file"]).exists())
+
+    async def test_picture_database_failure_cleans_new_upload(self):
+        await self.register()
+        original = (await self.upload_picture()).json()
+        for operation in ("upload", "reset"):
+            with patch.object(AsyncSession, "commit", new=AsyncMock(side_effect=RuntimeError("commit failed"))):
+                with self.assertRaisesRegex(RuntimeError, "commit failed"):
+                    if operation == "upload":
+                        await self.upload_picture()
+                    else:
+                        await self.client.delete("/api/users/me/image")
+            self.assertEqual((await self.client.get("/api/users/me")).json(), original)
+            self.assertEqual([path.name for path in self.profile_directory.iterdir()], [original["image_file"]])
+
+    async def test_picture_processing_runs_in_worker_and_strips_metadata(self):
+        await self.register()
+        event_loop_thread = threading.get_ident()
+        worker_threads = []
+        original_save = profile_images.save_profile_image
+
+        def save(data):
+            worker_threads.append(threading.get_ident())
+            return original_save(data)
+
+        source = Image.new("RGB", (80, 40), "red")
+        exif = Image.Exif()
+        exif[274] = 6  # Rotate 90 degrees clockwise.
+        exif[315] = "Private author metadata"
+        output = BytesIO()
+        source.save(output, format="JPEG", exif=exif)
+        with patch("app.api.endpoints.user.save_profile_image", side_effect=save):
+            response = await self.upload_picture(output.getvalue())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(worker_threads)
+        self.assertNotIn(event_loop_thread, worker_threads)
+        with Image.open(self.profile_directory / response.json()["image_file"]) as image:
+            self.assertEqual(image.size, (40, 80))
+            self.assertFalse(image.getexif())
+
+    async def test_filename_assignment_rejected_and_account_changes_clean_uploads(self):
+        user = await self.register()
+        for filename in ("../../secret", "another-users-picture.png"):
+            response = await self.client.patch(f"/api/users/{user['id']}/update", json={"image_file": filename})
+            self.assertEqual(response.status_code, 422)
+            response = await self.client.post("/api/users/register", json={
+                "username": "bob", "email": "bob@example.com", "password": "Password1", "image_file": filename,
+            })
+            self.assertEqual(response.status_code, 422)
+        await self.upload_picture()
+        response = await self.client.patch(f"/api/users/{user['id']}/update", json={"image_file": None})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(list(self.profile_directory.iterdir()), [])
+        await self.upload_picture()
+        response = await self.client.delete(f"/api/users/{user['id']}/delete")
+        self.assertEqual(response.status_code, 204, response.text)
+        self.assertEqual(list(self.profile_directory.iterdir()), [])
 
 
 if __name__ == "__main__":

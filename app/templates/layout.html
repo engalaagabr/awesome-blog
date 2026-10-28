@@ -35,7 +35,7 @@
         <!-- Stylesheet -->
         <link rel="stylesheet"
               type="text/css"
-              href="{{ url_for("static", path='css/main.css') }}?v=2">
+              href="{{ url_for("static", path='css/main.css') }}?v=3">
         <!-- Set a theme color that matches your website's primary color -->
         <meta name="theme-color" content="#527c9f">
         <!-- Favicon for all browsers -->
@@ -56,7 +56,7 @@
         <!-- <meta http-equiv="Content-Security-Policy"
        content=" default-src 'self'; script-src 'self' code.jquery.com; style-src 'self' fonts.googleapis.com; font-src fonts.gstatic.com; img-src 'self' images.examplecdn.com; "> -->
     </head>
-    <body class="d-flex flex-column min-vh-100">
+    <body class="d-flex flex-column min-vh-100 {% block body_class %}{% endblock %}">
         <header class="site-header">
             <nav class="navbar navbar-expand-md bg-steel fixed-top"
                  data-bs-theme="dark">
@@ -73,12 +73,12 @@
                     </button>
                     <div class="collapse navbar-collapse" id="navbarToggle">
                         <div class="navbar-nav me-auto">
-                            <a class="nav-link active"
-                               aria-current="page"
+                            <a class="nav-link{% if request.url.path in ['/', '/posts'] %} active{% endif %}"
+                               {% if request.url.path in ['/', '/posts'] %}aria-current="page"{% endif %}
                                href="{{ url_for("home") }}">Home</a>
                         </div>
                         <!-- Navbar Right Side -->
-                        <div class="navbar-nav">
+                        <div class="navbar-nav align-items-md-center">
                             <button class="btn btn-outline-light mb-2 mb-md-0 me-md-2"
                                     type="button" data-new-post>New Post</button>
                             <button class="btn btn-outline-light mb-2 mb-md-0 me-md-2"
@@ -87,10 +87,16 @@
                             <button class="btn btn-light mb-2 mb-md-0 me-md-3"
                                     type="button" data-guest-only data-bs-toggle="modal"
                                     data-bs-target="#registerModal">Register</button>
-                            <a class="nav-link" data-my-posts data-auth-only hidden>My Posts</a>
-                            <span class="navbar-text me-2" id="currentUsername" data-auth-only hidden></span>
-                            <button class="btn btn-outline-light mb-2 mb-md-0 me-md-2"
-                                    type="button" id="logoutButton" data-auth-only hidden>Logout</button>
+                            <div class="nav-item dropdown mb-2 mb-md-0 me-md-3" data-auth-only hidden>
+                                <button class="btn btn-light account-menu-button" type="button" id="currentUsername"
+                                        data-bs-toggle="dropdown" aria-expanded="false"></button>
+                                <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="currentUsername">
+                                    <li><a class="dropdown-item" href="{{ url_for('account') }}">Account Settings</a></li>
+                                    <li><a class="dropdown-item" data-my-posts>My Posts</a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><button class="dropdown-item" type="button" id="logoutButton">Logout</button></li>
+                                </ul>
+                            </div>
                             <div class="nav-item dropdown">
                                 <button class="nav-link dropdown-toggle"
                                    type="button"
@@ -126,10 +132,14 @@
                 </div>
                 <aside class="col-md-4">
                     <div class="content-section py-3 px-4 mb-4">
-                        <h3>Explore</h3>
+                        <h3>{{ 'Our Sidebar' if title == 'Account Settings' else 'Explore' }}</h3>
+                        {% if title == 'Account Settings' %}
+                            <p class="text-body-secondary">Catch up on the latest posts, manage your account, or share something new.</p>
+                        {% endif %}
                         <div class="list-group">
                             <a class="list-group-item list-group-item-action" href="{{ url_for('home') }}">Latest Posts</a>
                             <a class="list-group-item list-group-item-action" data-my-posts data-auth-only hidden>My Posts</a>
+                            <a class="list-group-item list-group-item-action" href="{{ url_for('account') }}" data-auth-only hidden>Account Settings</a>
                             <button class="list-group-item list-group-item-action" type="button" data-new-post>Write a Post</button>
                         </div>
                     </div>
@@ -267,7 +277,7 @@
         if (activeTheme === 'auto') setTheme('auto');
       });
         </script>
-        <script type="module" src="{{ url_for('static', path='js/app.js') }}?v=1"></script>
+        <script type="module" src="{{ url_for('static', path='js/app.js') }}?v=3"></script>
         {% block scripts %}
         {% endblock scripts %}
     </body>

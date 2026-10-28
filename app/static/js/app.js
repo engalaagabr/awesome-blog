@@ -3,8 +3,16 @@ import { getErrorMessage, hideModal, showModal } from "./utils.js?v=3";
 const homeUrl = document.querySelector(".navbar-brand").href;
 const pageMessage = document.getElementById("pageMessage");
 const postDetail = document.getElementById("postDetail");
+const accountPage = document.getElementById("accountPage");
+const profileForm = document.getElementById("profileForm");
+const imageForm = document.getElementById("profileImageForm");
+const profileInput = document.getElementById("profileImage");
+const profilePreview = document.getElementById("profileImagePreview");
+const resetPicture = document.getElementById("resetProfileImage");
 let currentUser = null;
 let pendingNewPost = false;
+let previewUrl = null;
+let profileBusy = false;
 
 function message(text, type = "success") {
     pageMessage.textContent = text;
@@ -13,6 +21,7 @@ function message(text, type = "success") {
 }
 
 function updateUser(user) {
+    const previousUser = currentUser;
     currentUser = user;
     document.querySelectorAll("[data-auth-only]").forEach(element => {
         element.hidden = !user;
@@ -21,6 +30,11 @@ function updateUser(user) {
         element.hidden = Boolean(user);
     });
     document.getElementById("currentUsername").textContent = user?.username || "";
+    if (user) {
+        document.querySelectorAll("[data-profile-user-id]").forEach(image => {
+            if (Number(image.dataset.profileUserId) === user.id) image.src = user.image_path;
+        });
+    }
     document.querySelectorAll("[data-my-posts]").forEach(link => {
         if (user) link.href = new URL(`users/${user.id}/posts`, homeUrl).href;
         else link.removeAttribute("href");
@@ -29,17 +43,19 @@ function updateUser(user) {
         document.getElementById("postActions").hidden =
             !user || user.id !== Number(postDetail.dataset.authorId);
     }
+    renderAccount(user, previousUser);
 }
 
 async function api(path, { method = "GET", body } = {}) {
     let response;
+    const isForm = body instanceof FormData;
     try {
         response = await fetch(new URL(`api/${path}`, homeUrl), {
             method,
             credentials: "same-origin",
             cache: "no-store",
-            headers: body === undefined ? {} : { "Content-Type": "application/json" },
-            body: body === undefined ? undefined : JSON.stringify(body),
+            headers: body === undefined || isForm ? {} : { "Content-Type": "application/json" },
+            body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
         });
     } catch {
         throw new Error("Unable to reach the server. Please check your connection and try again.");
@@ -139,6 +155,113 @@ bindForm("loginForm", async (data, form) => {
     if (pendingNewPost) {
         pendingNewPost = false;
         showModal("createPostModal");
+    }
+});
+
+function renderAccount(user, previousUser) {
+    if (!accountPage) return;
+    document.getElementById("accountLoading").hidden = true;
+    document.getElementById("accountContent").hidden = !user;
+    document.getElementById("accountSignIn").hidden = Boolean(user);
+    const changedAccount = user?.id !== previousUser?.id;
+    if (!user || changedAccount) {
+        profileForm.reset();
+        imageForm.reset();
+        profileInput.setCustomValidity("");
+        accountPage.querySelectorAll("[data-form-error]").forEach(error => { error.hidden = true; });
+        clearProfilePreview();
+    }
+    document.getElementById("profileUsername").textContent = user?.username || "";
+    document.getElementById("profileEmail").textContent = user?.email || "";
+    if (user) {
+        // Saving a picture must not discard unsaved edits to the profile fields.
+        if (changedAccount || user.username !== previousUser?.username) {
+            document.getElementById("accountUsername").value = user.username;
+        }
+        if (changedAccount || user.email !== previousUser?.email) {
+            document.getElementById("accountEmail").value = user.email;
+        }
+        if (!profileInput.files.length) clearProfilePreview();
+    }
+    resetPicture.disabled = profileBusy || !user?.image_file;
+}
+
+function clearProfilePreview() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+    profilePreview.src = currentUser?.image_path || new URL("static/profile_pics/default.jpg", homeUrl).href;
+}
+
+function setProfileBusy(busy) {
+    profileBusy = busy;
+    document.getElementById("accountContent").querySelectorAll("button, input").forEach(control => {
+        control.disabled = busy;
+    });
+    resetPicture.disabled = busy || !currentUser?.image_file;
+}
+
+bindForm("profileForm", async data => {
+    if (!currentUser) throw new Error("Please log in to continue.");
+    const body = { username: data.username.trim(), email: data.email.trim() };
+    if (!body.username || !body.email) throw new Error("Please enter a username and email.");
+    setProfileBusy(true);
+    try {
+        const user = await api(`users/${currentUser.id}/update`, { method: "PATCH", body });
+        updateUser(user);
+        document.getElementById("accountUsername").value = user.username;
+        document.getElementById("accountEmail").value = user.email;
+        message("Profile updated successfully.");
+    } finally {
+        setProfileBusy(false);
+    }
+});
+
+profileInput?.addEventListener("change", () => {
+    clearProfilePreview();
+    profileInput.setCustomValidity("");
+    imageForm.querySelector("[data-form-error]").hidden = true;
+    const file = profileInput.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+        profileInput.setCustomValidity("Profile pictures must be 5 MB or smaller.");
+    } else if (file.type && !["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+        profileInput.setCustomValidity("Choose a JPEG, PNG, or WebP image.");
+    }
+    if (!profileInput.reportValidity()) return;
+    previewUrl = URL.createObjectURL(file);
+    profilePreview.src = previewUrl;
+});
+
+bindForm("profileImageForm", async () => {
+    if (!currentUser) throw new Error("Please log in to continue.");
+    const body = new FormData(imageForm);
+    setProfileBusy(true);
+    try {
+        updateUser(await api("users/me/image", { method: "PUT", body }));
+        imageForm.reset();
+        clearProfilePreview();
+    } finally {
+        setProfileBusy(false);
+    }
+    message("Profile picture updated.");
+});
+
+resetPicture?.addEventListener("click", async () => {
+    if (profileBusy) return;
+    const errorBox = imageForm.querySelector("[data-form-error]");
+    errorBox.hidden = true;
+    setProfileBusy(true);
+    try {
+        updateUser(await api("users/me/image", { method: "DELETE" }));
+        imageForm.reset();
+        profileInput.setCustomValidity("");
+        clearProfilePreview();
+        message("Default profile picture restored.");
+    } catch (error) {
+        errorBox.textContent = error.message;
+        errorBox.hidden = false;
+    } finally {
+        setProfileBusy(false);
     }
 });
 

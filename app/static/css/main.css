@@ -157,11 +157,46 @@ a.article-title:focus {
 }
 
 .account-heading {
-  font-size: 2.5rem;
+  font-size: 2rem;
+  font-weight: 500;
 }
 
-.file-input-sm {
-  max-width: 300px;
+.account-page {
+  --spacing-xl: 5.3rem;
+  --account-img-size: 6.5rem;
+}
+
+.account-identity {
+  min-width: 0;
+}
+
+.account-menu-button {
+  max-width: 15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-settings .form-control {
+  padding: 0.5rem 0.75rem;
+}
+
+.account-settings input[type="file"]::file-selector-button {
+  margin: -0.5rem 0.75rem -0.5rem -0.75rem;
+  padding: 0.5rem 0.75rem;
+}
+
+@media (min-width: 1200px) {
+  .account-page .container {
+    max-width: 1180px;
+  }
+}
+
+@media (max-width: 575.98px) {
+  .account-summary {
+    align-items: flex-start !important;
+    flex-direction: column;
+  }
 }
 
 /* Custom Button Colors - Light Mode */
@@ -281,6 +316,17 @@ a.article-title:focus {
 
 [data-bs-theme="dark"] .content-section {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+[data-bs-theme="dark"] .account-page {
+  --color-bg-body: #181818;
+  --color-bg-content: #262626;
+  --color-border: #383838;
+}
+
+[data-bs-theme="dark"] .account-settings .form-control {
+  background-color: #212529;
+  border-color: #3c4044;
 }
 
 [data-bs-theme="dark"] article.content-section:hover {
