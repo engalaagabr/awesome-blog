@@ -1,4 +1,4 @@
-# Secrets
+# Environment files and secrets
 .env
 .env.*
 !.env.example
@@ -6,30 +6,52 @@
 # Python
 __pycache__/
 *.py[cod]
+.Python
 .venv/
 venv/
+ENV/
 *.egg-info/
+build/
+dist/
+pip-wheel-metadata/
 
-# Tooling
+# Test and tooling output
 .pytest_cache/
+.tox/
+.nox/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
 .coverage
+.coverage.*
 htmlcov/
+coverage.xml
+nosetests.xml
+junit.xml
 
 # Editors / OS
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db
 *.log
+
+# Local databases and database backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dump
+*.pgdump
+*.pg_dump
+*.backup
+*.sql.gz
 
 # Local artifacts from previous versions
 data/contracts/
 :memory:*.ses
 
 PROJECT_OVERVIEW.md
-*.db
 
 # Uploaded profile pictures
 app/media/profile_pics/*

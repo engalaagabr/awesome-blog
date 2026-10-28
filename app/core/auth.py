@@ -19,8 +19,8 @@ from app.models.user import User
 COOKIE_NAME = "blog_session"
 REFRESH_COOKIE_NAME = "blog_refresh"
 JWT_ALGORITHM = "HS256"
-JWT_ISSUER = "fastapi-blog"
-JWT_AUDIENCE = "fastapi-blog-api"
+JWT_ISSUER = "awesome-blog"
+JWT_AUDIENCE = "awesome-blog-api"
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -42,7 +42,7 @@ def request_token(request: Request) -> str | None:
 
 def credential_tag(user: User) -> str:
     # Bind tokens to the salted password hash without exposing that hash.
-    # Password changes and a deleted SQLite user ID being reused invalidate them.
+    # Password changes and a deleted user ID being reused invalidate them.
     return hmac.digest(
         settings.JWT_SECRET_KEY.get_secret_value().encode(), user.password.encode(), "sha256"
     ).hex()
@@ -204,8 +204,10 @@ async def refresh_login(token: str | None, request: Request, response: Response,
         await revoke_session(stored.session_id, db)
         await db.commit()
         raise unauthorized
-    # SQLite returns naive datetimes; the stored values are always UTC.
-    expires_at = stored.expires_at.replace(tzinfo=UTC)
+    # Treat a naive timestamp as UTC for compatibility with database drivers.
+    expires_at = stored.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
     tokens = issue_token_pair(user, db, stored.session_id, expires_at)
     await db.commit()
     set_token_cookies(request, response, tokens)

@@ -1,6 +1,6 @@
 {
-  "name": "FastAPI Blog",
-  "short_name": "FastAPI Blog",
+  "name": "Awesome Blog",
+  "short_name": "Awesome Blog",
   "description": "FastAPI Tutorial",
   "start_url": "/",
   "display": "standalone",

@@ -6,10 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt ./
-RUN --mount=type=cache,id=fastapi-blog-pip,target=/root/.cache/pip \
+RUN --mount=type=cache,id=awesome-blog-pip,target=/root/.cache/pip \
     pip install -r requirements.txt
 
 COPY app ./app
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 
 RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin blog \
     && mkdir -p /data /app/app/media/profile_pics \
