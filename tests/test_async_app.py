@@ -26,6 +26,7 @@ with patch.dict(os.environ, {
     from app import main
     from app.core import database
     from app.models.user import User
+    from app.models.post import Post
     from app.models.revoked_token import RevokedToken
     from app.core.auth import COOKIE_NAME, JWT_ALGORITHM, decode_access_token
     from app.core.settings import settings
@@ -113,6 +114,83 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 204, response.text)
         self.assertEqual(response.content, b"")
         self.assertEqual((await self.client.get(post_url)).status_code, 404)
+
+    async def test_post_pagination_and_navigation(self):
+        async with database.SessionLocal() as db:
+            alice = User(username="alice", email="alice@example.com", password="unused")
+            bob = User(username="bob", email="bob@example.com", password="unused")
+            db.add_all([alice, bob])
+            await db.flush()
+            timestamp = datetime(2026, 1, 1, tzinfo=UTC)
+            posts = [Post(title=f"Article {index:02d}", content="Body", user_id=alice.id,
+                          date_posted=timestamp) for index in range(12)]
+            # A higher ID with an older timestamp must still sort last.
+            older = Post(title="Older article", content="Body", user_id=bob.id,
+                         date_posted=timestamp - timedelta(days=1))
+            db.add_all([*posts, older])
+            await db.commit()
+            alice_id = alice.id
+            expected_ids = [post.id for post in reversed(posts)]
+            older_id = older.id
+
+        for url, expected in (("/api/posts/", [*expected_ids, older_id]),
+                              (f"/api/users/{alice_id}/posts", expected_ids)):
+            with self.subTest(url=url):
+                default = await self.client.get(url)
+                self.assertEqual(len(default.json()), 10)
+                collected = []
+                for page in range(1, 4):
+                    response = await self.client.get(url, params={"page": page, "per_page": 5})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.headers["x-total-count"], str(len(expected)))
+                    self.assertEqual(response.headers["x-total-pages"], "3")
+                    self.assertEqual(response.headers["x-page"], str(page))
+                    self.assertEqual(response.headers["x-per-page"], "5")
+                    collected.extend(item["id"] for item in response.json())
+                self.assertEqual(collected, expected)
+                response = await self.client.get(url, params={"page": 4, "per_page": 5})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), [])
+
+        for url in ("/", "/posts", f"/users/{alice_id}/posts"):
+            with self.subTest(url=url):
+                response = await self.client.get(url, params={"per_page": 5})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.text.count("<article "), 5)
+                self.assertIn("Article 11", response.text)
+                self.assertNotIn("Article 06", response.text)
+                self.assertNotIn('rel="prev"', response.text)
+                self.assertIn('rel="next"', response.text)
+                response = await self.client.get(url, params={"page": 2, "per_page": 5})
+                self.assertIn("Page 2 of 3", response.text)
+                self.assertIn(f"http://test{url}?page=3&amp;per_page=5", response.text)
+                self.assertIn('aria-current="page"', response.text)
+                self.assertIn("Article 06", response.text)
+                self.assertNotIn("Article 11", response.text)
+                response = await self.client.get(url, params={"page": 3, "per_page": 5})
+                self.assertIn('rel="prev"', response.text)
+                self.assertNotIn('rel="next"', response.text)
+                self.assertEqual((await self.client.get(url, params={"page": 4, "per_page": 5})).status_code, 404)
+
+    async def test_pagination_validation_and_empty_results(self):
+        user = await self.register(login=False)
+        urls = ("/", "/posts", f"/users/{user['id']}/posts",
+                "/api/posts/", f"/api/users/{user['id']}/posts")
+        for url in urls:
+            for params in ({"page": 0}, {"page": -1}, {"page": "bad"},
+                           {"per_page": 0}, {"per_page": 101}, {"per_page": "bad"}):
+                with self.subTest(url=url, params=params):
+                    response = await self.client.get(url, params=params)
+                    self.assertEqual(response.status_code, 422, response.text)
+            response = await self.client.get(url)
+            self.assertEqual(response.status_code, 200, response.text)
+            if url.startswith("/api/"):
+                self.assertEqual(response.json(), [])
+                self.assertEqual(response.headers["x-total-count"], "0")
+                self.assertEqual(response.headers["x-total-pages"], "0")
+            else:
+                self.assertNotIn('aria-label="Post pagination"', response.text)
+                self.assertEqual((await self.client.get(url, params={"page": 2})).status_code, 404)
 
     async def test_login_profile_and_password_update(self):
         user = await self.register()

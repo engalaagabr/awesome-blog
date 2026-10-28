@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 from starlette import status
 from starlette.concurrency import run_in_threadpool
 
@@ -14,6 +13,7 @@ from app.models.user import User
 from app.schemas.post import PostResponse
 from app.schemas.user import UserCreate, UserResponse, UserLogin, UserUpdate
 from app.utils.profile_images import MAX_IMAGE_BYTES, remove_profile_image, save_profile_image
+from app.utils.pagination import PaginationParams, paginate_posts
 
 router = APIRouter()
 
@@ -134,14 +134,21 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
 
 # get user posts
 @router.get("/{user_id}/posts", response_model=list[PostResponse])
-async def get_user_posts(user_id: int, db: AsyncSession = Depends(get_db)):
-    user = await db.get(User, user_id, options=[selectinload(User.posts)])
+async def get_user_posts(
+    user_id: int,
+    response: Response,
+    pagination: PaginationParams = Depends(),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
-    return user.posts
+    result = await paginate_posts(db, pagination, user_id=user_id)
+    response.headers.update(result.headers)
+    return result.items
 
 @router.get("/{user_id}/profile", response_model=UserResponse)
 async def get_user_profile(user_id: int, db: AsyncSession = Depends(get_db)):
