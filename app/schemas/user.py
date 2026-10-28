@@ -47,6 +47,11 @@ class UserLogin(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=4, max_length=100)
 
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=256)
+
+
 class UserUpdate(BaseModel):
     username: str | None = Field(None, min_length=3, max_length=50)
     email: str | None = Field(None, min_length=1, max_length=120)
