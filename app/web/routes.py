@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.post import Post
 from app.models.user import User
 from app.web.templates import templates
+from app.utils.pagination import PaginationParams, paginate_posts
 
 router = APIRouter(include_in_schema=False)
 
@@ -19,12 +18,18 @@ async def account(request: Request):
 
 @router.get("/", name="home")
 @router.get("/posts", name="posts")
-async def home(request: Request, db: AsyncSession = Depends(get_db)):
-    posts = (await db.scalars(select(Post).order_by(Post.date_posted.desc()))).all()
+async def home(
+    request: Request,
+    pagination: PaginationParams = Depends(),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await paginate_posts(db, pagination)
+    if result.page > 1 and not result.items:
+        raise HTTPException(status_code=404, detail="Page not found")
     return templates.TemplateResponse(
         request,
         "home.html",
-        {"posts": posts, "title": "Home"},
+        {"posts": result.items, "pagination": result, "title": "Home"},
     )
 
 
@@ -42,13 +47,23 @@ async def post_page(request: Request, post_id: int, db: AsyncSession = Depends(g
 
 
 @router.get("/users/{user_id}/posts")
-async def user_posts(request: Request, user_id: int, db: AsyncSession = Depends(get_db)):
-    user = await db.get(User, user_id, options=[selectinload(User.posts)])
+async def user_posts(
+    request: Request,
+    user_id: int,
+    pagination: PaginationParams = Depends(),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    result = await paginate_posts(db, pagination, user_id=user_id)
+    if result.page > 1 and not result.items:
+        raise HTTPException(status_code=404, detail="Page not found")
 
     return templates.TemplateResponse(
         request,
         "user_posts.html",
-        {"user": user, "posts": user.posts, "title": f"Posts by {user.username}"},
+        {"user": user, "posts": result.items, "pagination": result,
+         "title": f"Posts by {user.username}"},
     )

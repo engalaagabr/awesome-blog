@@ -1,5 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -7,12 +6,19 @@ from app.core.auth import get_current_user
 from app.models.post import Post
 from app.models.user import User
 from app.schemas.post import PostCreate, PostResponse, PostUpdate
+from app.utils.pagination import PaginationParams, paginate_posts
 
 router = APIRouter()
 
 @router.get("/", response_model=list[PostResponse])
-async def get_posts(db: AsyncSession = Depends(get_db)):
-    return (await db.scalars(select(Post))).all()
+async def get_posts(
+    response: Response,
+    pagination: PaginationParams = Depends(),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await paginate_posts(db, pagination)
+    response.headers.update(result.headers)
+    return result.items
 
 @router.post("/", response_model=PostResponse, status_code=status.HTTP_201_CREATED)
 async def create_post(
