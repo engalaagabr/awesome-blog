@@ -11,7 +11,7 @@ RUN --mount=type=cache,id=awesome-blog-pip,target=/root/.cache/pip \
 
 COPY app ./app
 COPY alembic.ini ./alembic.ini
-COPY migrations ./migrations
+COPY alembic ./alembic
 
 RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin blog \
     && mkdir -p /data /app/app/media/profile_pics \
