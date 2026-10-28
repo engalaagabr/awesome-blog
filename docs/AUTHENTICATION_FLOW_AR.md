@@ -252,7 +252,7 @@ Content-Type: application/json
 | `JWT_ACCESS_TOKEN_MINUTES` | 30 دقيقة؛ من 1 إلى 10080 دقيقة. |
 | `REFRESH_TOKEN_DAYS` | 7 أيام؛ من 1 إلى 90 يومًا. |
 
-القيم موجودة في [settings.py](../app/core/settings.py)، ومثال الضبط في [.env.example](../.env.example). تغيير `JWT_SECRET_KEY` يبطل توقيعات الـAccess Tokens السابقة، ويغيّر قيمة بصمة كلمة السر المحسوبة عند التحقق من Refresh Tokens.
+القيم موجودة في [config.py](../app/core/config.py)، ومثال الضبط في [.env.example](../.env.example). تغيير `JWT_SECRET_KEY` يبطل توقيعات الـAccess Tokens السابقة، ويغيّر قيمة بصمة كلمة السر المحسوبة عند التحقق من Refresh Tokens.
 
 مع تغيير اسم المشروع، أصبحت قيم `iss` و`aud` هي `awesome-blog` و`awesome-blog-api`. التوكنات الصادرة بالاسم السابق لم تعد صالحة، ويلزم تسجيل الدخول مجددًا.
 

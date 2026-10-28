@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.settings import settings
+from app.core.config import settings
 from app.models.revoked_token import RevokedToken
 from app.models.refresh_token import RefreshToken
 from app.models.user import User

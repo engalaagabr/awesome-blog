@@ -33,7 +33,7 @@ with patch.dict(os.environ, {
     from app.core.auth import (
         COOKIE_NAME, REFRESH_COOKIE_NAME, JWT_ALGORITHM, decode_access_token, refresh_token_hash,
     )
-    from app.core.settings import settings
+    from app.core.config import settings
     from app.utils import profile_images
 
 
