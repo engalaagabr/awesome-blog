@@ -57,6 +57,8 @@ class AsyncAppTests(unittest.IsolatedAsyncioTestCase):
         )
         self.stack.enter_context(patch.object(database, "engine", self.engine))
         self.stack.enter_context(patch.object(database, "SessionLocal", factory))
+        async with self.engine.begin() as connection:
+            await connection.run_sync(database.Base.metadata.create_all)
         # Exercise the real startup, shutdown, and request session dependency.
         await self.stack.enter_async_context(main.app.router.lifespan_context(main.app))
         self.client = await self.stack.enter_async_context(

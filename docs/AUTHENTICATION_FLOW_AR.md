@@ -1,4 +1,4 @@
-# شرح Authentication Flow الحالي في FastAPI Blog
+# شرح Authentication Flow الحالي في Awesome Blog
 
 التطبيق بيستخدم **Access Token من نوع JWT** لإثبات هوية المستخدم في الطلبات المحمية، و**Refresh Token عشوائي** لإصدار توكنات جديدة من غير إدخال كلمة السر كل مرة. المتصفح بيجدد الجلسة تلقائيًا عند رجوع `401`، طالما الـRefresh Token ما زال صالحًا.
 
@@ -112,8 +112,8 @@ current_user: User = Depends(get_current_user)
 | `iat` | وقت الإصدار. |
 | `nbf` | الوقت الذي يبدأ عنده قبول التوكن. |
 | `exp` | وقت انتهاء التوكن. |
-| `iss` | القيمة الثابتة `fastapi-blog`. |
-| `aud` | القيمة الثابتة `fastapi-blog-api`. |
+| `iss` | القيمة الثابتة `awesome-blog`. |
+| `aud` | القيمة الثابتة `awesome-blog-api`. |
 
 التوكنات الأقدم، الصادرة قبل إضافة Refresh Token، ممكن تتقبل من غير `sid` لحد انتهاء صلاحيتها إذا نجحت بقية الفحوص. تسجيل الدخول مرة جديدة هو اللي بيدي المستخدم جلسة تدعم التجديد.
 
@@ -254,9 +254,11 @@ Content-Type: application/json
 
 القيم موجودة في [settings.py](../app/core/settings.py)، ومثال الضبط في [.env.example](../.env.example). تغيير `JWT_SECRET_KEY` يبطل توقيعات الـAccess Tokens السابقة، ويغيّر قيمة بصمة كلمة السر المحسوبة عند التحقق من Refresh Tokens.
 
+مع تغيير اسم المشروع، أصبحت قيم `iss` و`aud` هي `awesome-blog` و`awesome-blog-api`. التوكنات الصادرة بالاسم السابق لم تعد صالحة، ويلزم تسجيل الدخول مجددًا.
+
 جدول `refresh_tokens` بيحتوي على `token_hash` و`session_id` و`user_id` و`credential_version` و`expires_at` و`used` و`revoked`. القيمة الأصلية للـRefresh Token لا تُحفظ فيه. جدول `revoked_tokens` بيحتوي على `jti` و`expires_at` للـAccess Tokens الملغاة.
 
-[lifespan.py](../app/core/lifespan.py) بيستخدم `Base.metadata.create_all` لإنشاء الجداول الناقصة عند بدء التطبيق. بعد إضافة دعم التجديد، إعادة تشغيل التطبيق تنشئ الجدول الجديد، والمستخدم يعمل Login جديد للحصول على refresh cookie.
+جداول `users` و`posts` و`refresh_tokens` و`revoked_tokens` تُدار عبر Alembic. عند تشغيل Compose، خدمة `migrate` تطبق `alembic upgrade head` قبل بدء التطبيق؛ لم يعد بدء التطبيق ينشئ الجداول تلقائيًا. بعد نشر مخطط جديد، قاعدة البيانات تُحدّث بالمهاجرة قبل استقبال الطلبات.
 
 ## الملفات والاختبارات
 

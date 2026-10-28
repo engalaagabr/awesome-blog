@@ -1,109 +1,84 @@
-# تشغيل FastAPI Blog باستخدام Docker
+# PostgreSQL وAlembic باستخدام Docker
 
-ملف `Dockerfile` بيجهز التطبيق باستخدام Python 3.14، و`compose.yaml` بيقرأ إعدادات التشغيل من `.env`. المنفذ في المثال هو 8082، وقاعدة SQLite والصور المرفوعة بتتخزن في Docker volumes منفصلة عن الـcontainer.
+Compose يشغّل PostgreSQL 17، وينفّذ مهاجرات Alembic قبل تشغيل FastAPI. قاعدة البيانات والصور محفوظتان في volumes مستقلين عن الحاويات. لم يعد التطبيق ينشئ الجداول تلقائيًا؛ كل تغيير في المخطط يمر عبر migration.
 
-## التشغيل باستخدام Compose
+## الإعداد والتشغيل
 
-نفّذ الأوامر من مجلد المشروع. لو ملف `.env` مش موجود، أنشئه من المثال:
+لو `.env` مش موجود، أنشئه من المثال:
 
 ```bash
 test -f .env || cp .env.example .env
 ```
 
-اضبط `JWT_SECRET_KEY` في `.env` على قيمة عشوائية لا تقل عن 32 حرفًا. لتوليد قيمة:
+غيّر `POSTGRES_PASSWORD` إلى كلمة مرور طويلة وآمنة ومناسبة للاستخدام داخل URL، وحدد `JWT_SECRET_KEY` بقيمة عشوائية لا تقل عن 32 حرفًا. حافظ على تطابق كلمة مرور PostgreSQL في `DATABASE_URL` للتشغيل المحلي. ملف `.env` الحقيقي مستبعد من صورة Docker ومستودع Git.
 
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
+| المتغير | الاستخدام |
+| --- | --- |
+| `POSTGRES_DB` | اسم قاعدة البيانات. |
+| `POSTGRES_USER` | مستخدم PostgreSQL. |
+| `POSTGRES_PASSWORD` | كلمة مرور المستخدم، ويجب أن تكون URL-safe حتى تدخل في رابط الاتصال. |
+| `DATABASE_URL` | اتصال PostgreSQL من جهاز المطور على `localhost`. |
+| `POSTGRES_PORT` | منفذ PostgreSQL على الجهاز، افتراضيًا 5432. |
+| `BLOG_PORT` | منفذ واجهة التطبيق، افتراضيًا 8082. |
+| `JWT_SECRET_KEY` | مفتاح توقيع التوكنات. |
+| `JWT_ACCESS_TOKEN_MINUTES` | مدة صلاحية Access Token بالدقائق. |
+| `REFRESH_TOKEN_DAYS` | الحد الأقصى لعمر جلسة التجديد بالأيام. |
 
-لو عندك مفتاح بالفعل في `.env`، احتفظ به. تغيير المفتاح يبطل التوكنات السابقة.
-
-الإعدادات المهمة في `.env`:
-
-| المتغير | القيمة في المثال | الاستخدام |
-| --- | --- | --- |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./blog.db` | قاعدة البيانات عند التشغيل المحلي خارج Docker. |
-| `DOCKER_DATABASE_URL` | `sqlite+aiosqlite:////data/blog.db` | قاعدة البيانات داخل volume الخاص بـDocker. |
-| `BLOG_PORT` | `8082` | المنفذ الذي تفتح عليه التطبيق من جهازك. |
-| `JWT_SECRET_KEY` | مفتاحك الخاص | توقيع التوكنات والتحقق منها. |
-| `JWT_ACCESS_TOKEN_MINUTES` | `30` | مدة صلاحية Access Token بالدقائق. |
-| `REFRESH_TOKEN_DAYS` | `7` | مدة الجلسة بالأيام. |
-
-ابدأ التشغيل:
+ابدأ الخدمات والمهاجرات:
 
 ```bash
 docker compose config --quiet
 docker compose up --build -d --wait
 ```
 
-باستخدام `BLOG_PORT=8082`، التطبيق متاح على [localhost:8082](http://localhost:8082)، وتوثيق الـAPI على [localhost:8082/docs](http://localhost:8082/docs).
+التطبيق متاح على `http://localhost:8082`، وتوثيق API على `/docs`. الخدمة تنتظر أن تصبح PostgreSQL جاهزة، ثم تنتظر نجاح `alembic upgrade head` قبل تشغيل Uvicorn.
 
-Compose بيحمّل `.env` من خلال `env_file`، وبيستبدل `DATABASE_URL` داخل الـcontainer بقيمة `DOCKER_DATABASE_URL`. إعدادات التطبيق بتتجاهل المتغيرات الإضافية الخاصة بـDocker، فملف `.env` نفسه يشتغل مع التشغيل المحلي أيضًا.
-
-لتغيير المنفذ، عدّل `BLOG_PORT` في `.env` ثم أعد تشغيل الخدمة:
+لتشغيل FastAPI خارج Docker مع قاعدة البيانات التي يديرها Compose، استخدم `DATABASE_URL` كما هو في `.env` بعد تشغيل خدمة قاعدة البيانات:
 
 ```bash
-docker compose up -d --wait
+docker compose up -d db
+uvicorn app.main:app --reload
 ```
 
-المنفذ داخل الـcontainer ثابت على 8000. متغيرات الـshell لها الأولوية عند استخدام Compose لقيم مثل `BLOG_PORT` و`DOCKER_DATABASE_URL` و`JWT_SECRET_KEY` في إعداداته. لو غيّرت متغيرات التطبيق الأخرى في `.env`، نفّذ `docker compose up -d --force-recreate --wait` لضمان إعادة تحميلها.
+## إدارة المهاجرات
 
-## متابعة التشغيل وإيقافه
+أنشئ migration بعد تعديل نماذج SQLAlchemy:
+
+```bash
+alembic revision --autogenerate -m "describe schema change"
+```
+
+راجع ملف migration الناتج وعدّله عند الحاجة، ثم طبّقه محليًا:
+
+```bash
+alembic upgrade head
+```
+
+للتراجع عن migration واحدة:
+
+```bash
+alembic downgrade -1
+```
+
+عند نشر migration جديدة، إعادة بناء التطبيق وتشغيل Compose تعيد تنفيذ الأمر بأمان؛ Alembic يطبق فقط المهاجرات غير المسجلة. لا تستخدم `Base.metadata.create_all()` لتحديث قواعد بيانات الإنتاج.
+
+## البيانات والتشغيل
+
+| Volume | المحتوى |
+| --- | --- |
+| `postgres_data` | ملفات PostgreSQL وقاعدة التطبيق. |
+| `blog_media` | صور الملفات الشخصية المرفوعة. |
+
+`docker compose down` يوقف الحاويات مع الاحتفاظ بالبيانات. `docker compose down --volumes` يحذف قاعدة البيانات والصور بشكل نهائي.
+
+قاعدة `blog.db` المحلية القديمة لا تُنقل تلقائيًا إلى PostgreSQL؛ أول تشغيل يبدأ قاعدة PostgreSQL جديدة. صدّر البيانات واستوردها بأداة مناسبة قبل التحويل إذا كانت لديك بيانات تريد الاحتفاظ بها.
 
 ```bash
 docker compose ps
 docker compose logs -f web
-docker compose down
+docker compose logs migrate
 ```
 
-`down` بيوقف ويحذف الـcontainer والشبكة الخاصة بالمشروع، مع الاحتفاظ بالـnamed volumes. إضافة `--volumes` إلى الأمر تحذف قاعدة البيانات والصور المخزنة في volumes المشروع. راجع [دورة حياة Docker volumes](https://docs.docker.com/engine/storage/volumes/#a-volumes-lifecycle).
+مفتاح JWT وكلمة مرور قاعدة البيانات يُقرآن وقت التشغيل ولا يضافان إلى صورة التطبيق. استخدم مدير أسرار مناسبًا بدل ملف `.env` عند النشر الفعلي، وخذ نسخًا احتياطية منتظمة من PostgreSQL volume.
 
-بعد تعديل الكود أو المتطلبات، شغّل `docker compose up --build -d --wait` لإعادة البناء والتشغيل. الملفات مش مربوطة من جهازك داخل الـcontainer، وUvicorn بيشتغل من غير `--reload`.
-
-## تخزين البيانات
-
-| Volume في Compose | المسار داخل الـcontainer | المحتوى |
-| --- | --- | --- |
-| `blog_data` | `/data` | `blog.db` بما فيه الحسابات والبوستات وتوكنات التجديد والإلغاء. |
-| `blog_media` | `/app/app/media` | الصور المرفوعة داخل `profile_pics`. |
-
-Docker بيضيف اسم مشروع Compose إلى أسماء الـvolumes الفعلية. استخدام نفس اسم المشروع بيعيد استخدام نفس البيانات عند إعادة التشغيل أو إنشاء container جديد.
-
-أول تشغيل بيبدأ بقاعدة بيانات وصور مستقلة عن الموجودين محليًا. ملف `blog.db` ومجلد `app/media` على جهازك لا يتم نسخهما إلى الصورة أو نقلهما تلقائيًا للـvolumes. الجداول الناقصة بتتعمل تلقائيًا عند بدء التطبيق.
-
-## تشغيل Docker من غير Compose
-
-باستخدام نفس ملف `.env` الذي يحتوي على مفتاح JWT:
-
-```bash
-docker build -t fastapi-blog:local .
-docker run -d \
-  --name fastapi-blog \
-  --init \
-  --env-file .env \
-  --env DATABASE_URL=sqlite+aiosqlite:////data/blog.db \
-  --publish 127.0.0.1:8082:8000 \
-  --mount type=volume,source=fastapi-blog-data,target=/data \
-  --mount type=volume,source=fastapi-blog-media,target=/app/app/media \
-  fastapi-blog:local
-```
-
-`--env DATABASE_URL=...` بيحدد مسار قاعدة البيانات داخل الـvolume بدل المسار المحلي الموجود في `.env`. الـvolumes المسماة في المثال مستقلة عن volumes Compose؛ اختار طريقة التشغيل المناسبة واستخدم نفس أسماء الـvolumes للحفاظ على بياناتها.
-
-للمتابعة والإيقاف:
-
-```bash
-docker logs -f fastapi-blog
-docker stop fastapi-blog
-docker rm fastapi-blog
-```
-
-## إعداد الصورة وفحص الحالة
-
-التطبيق بيشتغل بمستخدم `blog` ورقم `10001`، وله صلاحية الكتابة في مسارات البيانات والصور. السيرفر بيستخدم Uvicorn بعملية worker واحدة، وبيسمع على `0.0.0.0:8000` داخل الـcontainer. ربط المنفذ في Compose بيتيح الوصول من الجهاز المحلي على `127.0.0.1`.
-
-الـhealthcheck بيطلب `/api/posts/?per_page=1` كل 30 ثانية، وبالتالي بيتحقق من استجابة الـAPI ووصوله لقاعدة البيانات. له فترة بدء 20 ثانية وثلاث محاولات فاشلة قبل اعتبار الحالة `unhealthy`. حالة الفحص تظهر في `docker compose ps`. إعداد `restart: unless-stopped` يعيد تشغيل العملية لو خرجت، لكنه لا يعيد تشغيل container لمجرد تحوّل حالته إلى `unhealthy`؛ راجع [إعدادات خدمة Compose](https://docs.docker.com/reference/compose-file/services/).
-
-ملف `.dockerignore` بيستبعد `.env` وقاعدة البيانات المحلية والصور المرفوعة و`.git` والـvirtual environment والاختبارات والتوثيق من build context. مفتاح JWT يُمرّر وقت التشغيل ولا يُضاف إلى صورة التطبيق.
-
-شرح الدخول والتجديد والإلغاء موجود في [Authentication Flow الحالي](AUTHENTICATION_FLOW_AR.md).
+التطبيق وصورة الإنتاج يستخدمان PostgreSQL فقط. الاختبارات الحالية تستخدم SQLite معزولة محليًا، وثبّت متطلباتها الاختيارية عبر `pip install -r requirements-dev.txt`.

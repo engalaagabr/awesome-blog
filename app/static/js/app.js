@@ -285,7 +285,7 @@ if (postDetail) {
         const post = await api(postPath, { method: "PATCH", body: postFields(data) });
         postDetail.querySelector(".article-title").textContent = post.title;
         postDetail.querySelector(".article-content").textContent = post.content;
-        document.title = `FastAPI Blog - ${post.title.slice(0, 50)}`;
+        document.title = `Awesome Blog - ${post.title.slice(0, 50)}`;
         await success("editPostModal", "Post updated successfully!");
     });
     bindForm("deletePostForm", async () => {
