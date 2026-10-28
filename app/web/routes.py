@@ -11,6 +11,12 @@ from app.web.templates import templates
 router = APIRouter(include_in_schema=False)
 
 
+@router.get("/account", name="account")
+async def account(request: Request):
+    # Personal details are loaded by the authenticated /api/users/me endpoint.
+    return templates.TemplateResponse(request, "account.html", {"title": "Account Settings"})
+
+
 @router.get("/", name="home")
 @router.get("/posts", name="posts")
 async def home(request: Request, db: AsyncSession = Depends(get_db)):

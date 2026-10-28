@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.schemas.post import PostResponse
 from app.schemas.user import UserCreate, UserResponse, UserLogin, UserUpdate
+from app.utils.profile_images import MAX_IMAGE_BYTES, remove_profile_image, save_profile_image
 
 router = APIRouter()
 
@@ -70,7 +71,9 @@ async def login_user(user_login_schema: UserLogin, request: Request, response: R
         "message": "Login successful",
         "id": user.id,
         "username": user.username,
-        "email": user.email
+        "email": user.email,
+        "image_file": user.image_file,
+        "image_path": user.image_path,
     }
 
 
@@ -78,6 +81,47 @@ async def login_user(user_login_schema: UserLogin, request: Request, response: R
 async def current_profile(response: Response, user: User = Depends(get_current_user)):
     response.headers["Cache-Control"] = "no-store"
     return user
+
+
+async def replace_profile_image(user: User, filename: str | None, db: AsyncSession):
+    previous_image = user.image_file
+    user.image_file = filename
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await run_in_threadpool(remove_profile_image, filename)
+        raise
+    await run_in_threadpool(remove_profile_image, previous_image)
+    return user
+
+
+@router.put("/me/image", response_model=UserResponse)
+async def upload_profile_image(
+    response: Response,
+    image: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        if image.size is not None and image.size > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="Profile pictures must be 5 MB or smaller.")
+        data = await image.read(MAX_IMAGE_BYTES + 1)
+    finally:
+        await image.close()
+    filename = await run_in_threadpool(save_profile_image, data)
+    response.headers["Cache-Control"] = "no-store"
+    return await replace_profile_image(user, filename, db)
+
+
+@router.delete("/me/image", response_model=UserResponse)
+async def reset_profile_image(
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store"
+    return await replace_profile_image(user, None, db)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT,
@@ -121,6 +165,7 @@ async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = 
     if user.id != current_user.id:
         raise HTTPException(status_code=403, detail="You are not authorized to update this user")
 
+    previous_image = user.image_file
     if user_update.username is not None:
         user.username = user_update.username
     if user_update.email is not None:
@@ -137,6 +182,8 @@ async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = 
         await db.rollback()
         raise HTTPException(status_code=409, detail="Username or email already exists.")
     await db.refresh(user)
+    if "image_file" in user_update.model_fields_set:
+        await run_in_threadpool(remove_profile_image, previous_image)
 
     return user
 
@@ -153,6 +200,8 @@ async def delete_user(user_id: int, request: Request, db: AsyncSession = Depends
         raise HTTPException(status_code=403, detail="You are not authorized to delete this user")
 
     await revoke_request_tokens(request, db)
+    previous_image = user.image_file
     # The User.posts relationship cascades deletion to this user's posts.
     await db.delete(user)
     await db.commit()
+    await run_in_threadpool(remove_profile_image, previous_image)

@@ -30,3 +30,7 @@ data/contracts/
 
 PROJECT_OVERVIEW.md
 *.db
+
+# Uploaded profile pictures
+app/media/profile_pics/*
+!app/media/profile_pics/.gitkeep
