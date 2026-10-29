@@ -33,7 +33,7 @@ docker compose config --quiet
 docker compose up --build -d --wait
 ```
 
-التطبيق متاح على `http://localhost:8082`، وتوثيق API على `/docs`. الخدمة تنتظر أن تصبح PostgreSQL جاهزة، ثم تنتظر نجاح `alembic upgrade head` قبل تشغيل Uvicorn.
+التطبيق متاح على `http://localhost:8082`، وتوثيق API على `/docs`، وفحص الجاهزية على `/health`. الخدمة تنتظر أن تصبح PostgreSQL جاهزة، ثم تنتظر نجاح `alembic upgrade head` قبل تشغيل Uvicorn.
 
 لتشغيل FastAPI خارج Docker مع قاعدة البيانات التي يديرها Compose، استخدم `DATABASE_URL` كما هو في `.env` بعد تشغيل خدمة قاعدة البيانات:
 
