@@ -1,6 +1,4 @@
 from fastapi import FastAPI
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routers.post import router as posts_router
@@ -8,7 +6,6 @@ from app.api.routers.user import router as users_router
 from app.api.endpoints.health import router as health_router
 from app.core.exceptions import exception_handlers
 from app.core.lifespan import lifespan
-from app.web.routes import router as pages_router
 from app.utils.profile_images import MEDIA_DIR
 
 OPENAPI_TAGS = [
@@ -44,7 +41,6 @@ app = FastAPI(
     ),
     version="1.0.0",
     openapi_tags=OPENAPI_TAGS,
-    docs_url=None,
     swagger_ui_parameters={
         "deepLinking": True,
         "displayRequestDuration": True,
@@ -65,31 +61,3 @@ app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 app.include_router(posts_router)
 app.include_router(users_router)
 app.include_router(health_router)
-app.include_router(pages_router)
-
-
-@app.get("/docs", include_in_schema=False)
-async def swagger_docs() -> HTMLResponse:
-    docs = get_swagger_ui_html(
-        openapi_url=app.openapi_url or "/openapi.json",
-        title=f"{app.title} — API Documentation",
-        swagger_favicon_url="/static/icons/favicon.ico",
-        swagger_ui_parameters=app.swagger_ui_parameters,
-    )
-    html = docs.body.decode("utf-8")
-    html = html.replace(
-        '<div id="swagger-ui">',
-        '<header class="docs-hero">'
-        '<div class="docs-hero-inner">'
-        '<span class="docs-kicker">AWESOME BLOG · DEVELOPER PORTAL</span>'
-        '<h1>Awesome Blog API</h1>'
-        '<p>Explore the API, review request formats, and try endpoints against your local app.</p>'
-        '<span class="docs-version">REST API <b>·</b> v1.0.0 <b>·</b> OpenAPI</span>'
-        '</div></header>'
-        '<div id="swagger-ui">',
-    )
-    html = html.replace(
-        "</head>",
-        '<link rel="stylesheet" href="/static/css/api-docs.css"></head>',
-    )
-    return HTMLResponse(html)

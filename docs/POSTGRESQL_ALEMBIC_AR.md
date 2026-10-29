@@ -88,4 +88,4 @@ alembic downgrade -1
 
 اعتماد SQLite موجود في `requirements-dev.txt` فقط لتشغيل الاختبارات الحالية بقاعدة معزولة. صورة التطبيق واعتماديات التشغيل تستخدم PostgreSQL و`asyncpg`.
 
-شرح التشغيل اليومي وأوامر Docker موجود في [DOCKER_AR.md](DOCKER_AR.md)، وشرح المصادقة وتخزين refresh tokens في [AUTHENTICATION_FLOW_AR.md](AUTHENTICATION_FLOW_AR.md).
+شرح التشغيل اليومي وأوامر Docker موجود في [DOCKER_AR.md](DOCKER_AR.md)، وشرح المصادقة عبر الـAPI في [AUTHENTICATION_AR.md](AUTHENTICATION_AR.md).

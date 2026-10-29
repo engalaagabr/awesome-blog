@@ -9,7 +9,7 @@ from tests._async_app_test_base import (
 )
 
 class PostAPITests(AsyncAppTestCase):
-    async def test_post_crud_and_html_relationships(self):
+    async def test_post_crud_and_api_relationships(self):
         user = await self.register()
         post = await self.create_post(user["id"])
         self.assertEqual(post["author"], "alice")
@@ -20,11 +20,6 @@ class PostAPITests(AsyncAppTestCase):
             response = await self.client.get(url)
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json(), [post])
-        for url in ("/", "/posts", f"/posts/{post['id']}", f"/users/{user['id']}/posts"):
-            response = await self.client.get(url)
-            self.assertEqual(response.status_code, 200, response.text)
-            self.assertIn("Async post", response.text)
-            self.assertIn("alice", response.text)
         response = await self.client.patch(post_url, params={"user_id": user["id"]},
                                            json={"title": "Updated post"})
         self.assertEqual(response.status_code, 200, response.text)
@@ -36,7 +31,7 @@ class PostAPITests(AsyncAppTestCase):
         self.assertEqual(response.content, b"")
         self.assertEqual((await self.client.get(post_url)).status_code, 404)
 
-    async def test_post_pagination_and_navigation(self):
+    async def test_post_pagination(self):
         async with database.SessionLocal() as db:
             alice = User(username="alice", email="alice@example.com", password="unused")
             bob = User(username="bob", email="bob@example.com", password="unused")
@@ -73,25 +68,6 @@ class PostAPITests(AsyncAppTestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json(), [])
 
-        for url in ("/", "/posts", f"/users/{alice_id}/posts"):
-            with self.subTest(url=url):
-                response = await self.client.get(url, params={"per_page": 5})
-                self.assertEqual(response.status_code, 200, response.text)
-                self.assertEqual(response.text.count("<article "), 5)
-                self.assertIn("Article 11", response.text)
-                self.assertNotIn("Article 06", response.text)
-                self.assertNotIn('rel="prev"', response.text)
-                self.assertIn('rel="next"', response.text)
-                response = await self.client.get(url, params={"page": 2, "per_page": 5})
-                self.assertIn("Page 2 of 3", response.text)
-                self.assertIn(f"http://test{url}?page=3&amp;per_page=5", response.text)
-                self.assertIn('aria-current="page"', response.text)
-                self.assertIn("Article 06", response.text)
-                self.assertNotIn("Article 11", response.text)
-                response = await self.client.get(url, params={"page": 3, "per_page": 5})
-                self.assertIn('rel="prev"', response.text)
-                self.assertNotIn('rel="next"', response.text)
-                self.assertEqual((await self.client.get(url, params={"page": 4, "per_page": 5})).status_code, 404)
 
     async def test_user_posts_exclude_other_users_posts(self):
         alice = await self.register()
@@ -103,8 +79,3 @@ class PostAPITests(AsyncAppTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual({item["id"] for item in response.json()}, {first["id"], second["id"]})
         self.assertTrue(all(item["author"] == "alice" for item in response.json()))
-        response = await self.client.get(f"/users/{alice['id']}/posts")
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertIn("Alice first", response.text)
-        self.assertIn("Alice second", response.text)
-        self.assertNotIn("Bob private listing", response.text)

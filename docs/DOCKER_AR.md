@@ -21,7 +21,7 @@ test -f .env || cp .env.example .env
 | `POSTGRES_PASSWORD` | كلمة مرور المستخدم، ويجب أن تكون URL-safe حتى تدخل في رابط الاتصال. |
 | `DATABASE_URL` | اتصال PostgreSQL من جهاز المطور على `localhost`. |
 | `POSTGRES_PORT` | منفذ PostgreSQL على الجهاز، افتراضيًا 5432. |
-| `BLOG_PORT` | منفذ واجهة التطبيق، افتراضيًا 8082. |
+| `BLOG_PORT` | منفذ الـAPI على الجهاز، افتراضيًا 8082. |
 | `JWT_SECRET_KEY` | مفتاح توقيع التوكنات. |
 | `JWT_ACCESS_TOKEN_MINUTES` | مدة صلاحية Access Token بالدقائق. |
 | `REFRESH_TOKEN_DAYS` | الحد الأقصى لعمر جلسة التجديد بالأيام. |

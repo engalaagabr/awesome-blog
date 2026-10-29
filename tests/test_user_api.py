@@ -428,7 +428,6 @@ class UserAPITests(AsyncAppTestCase):
 
     async def test_upload_replace_and_reset_profile_picture(self):
         user = await self.register()
-        post = await self.create_post(user["id"])
         previous = None
         for format, content_type in (("JPEG", "image/jpeg"), ("PNG", "image/png"), ("WEBP", "image/webp")):
             with self.subTest(format=format):
@@ -447,10 +446,6 @@ class UserAPITests(AsyncAppTestCase):
                 self.assertEqual(served.headers["content-type"], "image/png")
                 with Image.open(BytesIO(served.content)) as image:
                     self.assertEqual(image.size, (512, 256))
-                for url in ("/", f"/posts/{post['id']}", f"/users/{user['id']}/posts"):
-                    page = await self.client.get(url)
-                    self.assertIn(profile["image_path"], page.text)
-                    self.assertIn('href="http://test/account"', page.text)
                 if previous:
                     self.assertFalse((self.profile_directory / previous).exists())
                 self.assertEqual(len(list(self.profile_directory.iterdir())), 1)

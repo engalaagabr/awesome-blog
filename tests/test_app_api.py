@@ -9,8 +9,7 @@ from tests._async_app_test_base import (
 class AppAPITests(AsyncAppTestCase):
     async def test_pagination_validation_and_empty_results(self):
         user = await self.register(login=False)
-        urls = ("/", "/posts", f"/users/{user['id']}/posts",
-                "/api/posts/", f"/api/users/{user['id']}/posts")
+        urls = ("/api/posts/", f"/api/users/{user['id']}/posts")
         for url in urls:
             for params in ({"page": 0}, {"page": -1}, {"page": "bad"},
                            {"per_page": 0}, {"per_page": 101}, {"per_page": "bad"}):
@@ -19,13 +18,9 @@ class AppAPITests(AsyncAppTestCase):
                     self.assertEqual(response.status_code, 422, response.text)
             response = await self.client.get(url)
             self.assertEqual(response.status_code, 200, response.text)
-            if url.startswith("/api/"):
-                self.assertEqual(response.json(), [])
-                self.assertEqual(response.headers["x-total-count"], "0")
-                self.assertEqual(response.headers["x-total-pages"], "0")
-            else:
-                self.assertNotIn('aria-label="Post pagination"', response.text)
-                self.assertEqual((await self.client.get(url, params={"page": 2})).status_code, 404)
+            self.assertEqual(response.json(), [])
+            self.assertEqual(response.headers["x-total-count"], "0")
+            self.assertEqual(response.headers["x-total-pages"], "0")
 
     async def test_errors_empty_results_and_ownership_checks(self):
         user = await self.register()
@@ -43,8 +38,7 @@ class AppAPITests(AsyncAppTestCase):
             response = await self.client.request(method, url,
                 params={"user_id": user["id"]}, json=body)
             self.assertEqual(response.status_code, 403, response.text)
-        for url in ("/api/posts/9999", "/api/users/9999/profile", "/api/users/9999/posts",
-                    "/posts/9999", "/users/9999/posts"):
+        for url in ("/api/posts/9999", "/api/users/9999/profile", "/api/users/9999/posts"):
             response = await self.client.get(url)
             self.assertEqual(response.status_code, 404, response.text)
         response = await self.client.post("/api/posts/", json={
@@ -53,8 +47,6 @@ class AppAPITests(AsyncAppTestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["user_id"], other["id"])
         response = await self.client.get("/api/posts/not-an-int")
-        self.assertEqual(response.status_code, 422)
-        response = await self.client.get("/posts/not-an-int")
         self.assertEqual(response.status_code, 422)
         response = await self.client.post("/api/users/login", json={
             "username": "unknown", "password": "Wrong1",
@@ -106,17 +98,12 @@ class AppAPITests(AsyncAppTestCase):
             ("GET", "/api/users/bad/posts", None),
             ("PATCH", "/api/users/bad/update", {"username": "valid"}),
             ("DELETE", "/api/users/bad/delete", None),
-            ("GET", "/posts/bad", None),
-            ("GET", "/users/bad/posts", None),
         ]
         for method, url, body in cases:
             with self.subTest(method=method, url=url):
                 response = await self.client.request(method, url, json=body)
                 self.assertEqual(response.status_code, 422, response.text)
-                if url.startswith("/api/"):
-                    self.assertIsInstance(response.json()["detail"], list)
-                else:
-                    self.assertIn("text/html", response.headers["content-type"])
+                self.assertIsInstance(response.json()["detail"], list)
 
     async def test_invalid_request_bodies(self):
         await self.register()
@@ -172,29 +159,23 @@ class AppAPITests(AsyncAppTestCase):
         response = await self.client.get(f"/api/posts/{post['id']}")
         self.assertEqual(response.json()["content"], "Changed content")
 
-    async def test_empty_pages_and_deleting_user_without_posts(self):
+    async def test_deleting_user_without_posts(self):
         user = await self.register()
-        for url in ("/", "/posts", f"/users/{user['id']}/posts"):
-            with self.subTest(url=url):
-                response = await self.client.get(url)
-                self.assertEqual(response.status_code, 200, response.text)
-                self.assertIn("text/html", response.headers["content-type"])
         response = await self.client.delete(f"/api/users/{user['id']}/delete")
         self.assertEqual(response.status_code, 204, response.text)
         self.assertEqual(response.content, b"")
         response = await self.client.delete(f"/api/users/{user['id']}/delete")
         self.assertEqual(response.status_code, 401)
 
-    async def test_documentation_static_files_and_unknown_routes(self):
-        for url in ("/docs", "/redoc", "/openapi.json", "/static/css/main.css", "/static/js/api.js",
-                    "/static/profile_pics/default.jpg"):
+    async def test_api_documentation_static_avatar_and_unknown_routes(self):
+        for url in ("/docs", "/redoc", "/openapi.json", "/static/profile_pics/default.jpg"):
             with self.subTest(url=url):
                 response = await self.client.get(url)
                 self.assertEqual(response.status_code, 200)
         schema = (await self.client.get("/openapi.json")).json()
         operations = sum(len(methods) for methods in schema["paths"].values())
         self.assertEqual(operations, 24)
-        for url in ("/api/missing", "/missing", "/static/missing.css", "/media/missing.jpg"):
+        for url in ("/api/missing", "/missing", "/media/missing.jpg"):
             with self.subTest(url=url):
                 response = await self.client.get(url)
                 self.assertEqual(response.status_code, 404)
