@@ -14,13 +14,17 @@ from app.core.security import hash_password, verify_password
 from app.models.user import User
 from app.models.refresh_token import RefreshToken
 from app.schemas.post import PostResponse
-from app.schemas.user import RefreshTokenRequest, UserCreate, UserResponse, UserLogin, UserUpdate
+from app.schemas.user import (
+    RefreshTokenRequest, UserCreate, UserResponse, UserLogin, UserUpdate,
+    UserPublicResponse,
+)
 from app.utils.profile_images import MAX_IMAGE_BYTES, remove_profile_image, save_profile_image
 from app.utils.pagination import PaginationParams, paginate_posts
 
 router = APIRouter()
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED,
+             summary="Register an account", description="Creates an account. Passwords require at least 8 characters.",
              dependencies=[Depends(check_origin)])
 async def register_user(user_schema: UserCreate, db: AsyncSession = Depends(get_db)):
     # Check if the username or email already exists in the database
@@ -45,14 +49,23 @@ async def register_user(user_schema: UserCreate, db: AsyncSession = Depends(get_
         password=hashed_pwd,  
     )
     db.add(new_user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username or email already exists.",
+        ) from None
     await db.refresh(new_user)
 
     return new_user
     
 
 
-@router.post("/login", status_code=status.HTTP_200_OK, dependencies=[Depends(check_origin)])
+@router.post("/login", status_code=status.HTTP_200_OK, summary="Sign in",
+             description="Starts a session and sets HttpOnly access and refresh cookies. Also returns tokens for API clients.",
+             dependencies=[Depends(check_origin)])
 async def login_user(user_login_schema: UserLogin, request: Request, response: Response,
                      db: AsyncSession = Depends(get_db)):
     user = await db.scalar(select(User).where(User.username == user_login_schema.username))
@@ -78,7 +91,9 @@ async def login_user(user_login_schema: UserLogin, request: Request, response: R
     }
 
 
-@router.post("/refresh", dependencies=[Depends(check_origin)])
+@router.post("/refresh", summary="Refresh a session",
+             description="Rotates the refresh token. Reusing a rotated token revokes its session.",
+             dependencies=[Depends(check_origin)])
 async def refresh_tokens(
     request: Request, response: Response,
     body: RefreshTokenRequest | None = None,
@@ -93,7 +108,7 @@ async def refresh_tokens(
     return await refresh_login(token, request, response, db)
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserResponse, summary="Get my profile")
 async def current_profile(response: Response, user: User = Depends(get_current_user)):
     response.headers["Cache-Control"] = "no-store"
     return user
@@ -112,7 +127,8 @@ async def replace_profile_image(user: User, filename: str | None, db: AsyncSessi
     return user
 
 
-@router.put("/me/image", response_model=UserResponse)
+@router.put("/me/image", response_model=UserResponse, summary="Upload my profile picture",
+            description="Accepts JPEG, PNG, or WebP images up to 5 MB.")
 async def upload_profile_image(
     response: Response,
     image: UploadFile = File(...),
@@ -130,7 +146,7 @@ async def upload_profile_image(
     return await replace_profile_image(user, filename, db)
 
 
-@router.delete("/me/image", response_model=UserResponse)
+@router.delete("/me/image", response_model=UserResponse, summary="Reset my profile picture")
 async def reset_profile_image(
     response: Response,
     user: User = Depends(get_current_user),
@@ -140,7 +156,8 @@ async def reset_profile_image(
     return await replace_profile_image(user, None, db)
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT,
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Sign out",
+             description="Revokes the current session and clears its cookies.",
              dependencies=[Depends(check_origin)])
 async def logout(request: Request, response: Response, body: RefreshTokenRequest | None = None,
                  db: AsyncSession = Depends(get_db)):
@@ -154,7 +171,8 @@ async def logout(request: Request, response: Response, body: RefreshTokenRequest
     clear_token_cookies(request, response)
 
 # get user posts
-@router.get("/{user_id}/posts", response_model=list[PostResponse])
+@router.get("/{user_id}/posts", response_model=list[PostResponse], summary="List a user's posts",
+            description="Returns a public, paginated list of posts written by this user.")
 async def get_user_posts(
     user_id: int,
     response: Response,
@@ -171,7 +189,8 @@ async def get_user_posts(
     response.headers.update(result.headers)
     return result.items
 
-@router.get("/{user_id}/profile", response_model=UserResponse)
+@router.get("/{user_id}/profile", response_model=UserPublicResponse,
+            summary="Get a public profile", description="Returns public profile fields; account email is not included.")
 async def get_user_profile(user_id: int, db: AsyncSession = Depends(get_db)):
     user = await db.get(User, user_id)
     if not user:
@@ -181,7 +200,8 @@ async def get_user_profile(user_id: int, db: AsyncSession = Depends(get_db)):
         )
     return user
 
-@router.patch("/{user_id}/update", response_model=UserResponse)
+@router.patch("/{user_id}/update", response_model=UserResponse, summary="Update my account",
+             description="Only the signed-in account owner can update these fields.")
 async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = Depends(get_db),
                       current_user: User = Depends(get_current_user)):
     user = await db.get(User, user_id)
@@ -218,7 +238,8 @@ async def update_user(user_id: int, user_update: UserUpdate, db: AsyncSession = 
 
     return user
 
-@router.delete("/{user_id}/delete", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{user_id}/delete", status_code=status.HTTP_204_NO_CONTENT,
+               summary="Delete my account", description="Deletes the signed-in user's account, posts, likes, and comments.")
 async def delete_user(user_id: int, request: Request, response: Response, db: AsyncSession = Depends(get_db),
                       current_user: User = Depends(get_current_user)):
     user = await db.get(User, user_id)

@@ -15,7 +15,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     image_file: None = Field(default=None, description="Upload pictures using PUT /api/users/me/image after login.")
-    password: str = Field(..., min_length=4, max_length=100)
+    password: str = Field(..., min_length=8, max_length=100)
 
     @field_validator("password")
     @classmethod
@@ -43,6 +43,16 @@ class UserResponse(UserBase):
     image_file: str | None
 
 
+class UserPublicResponse(BaseModel):
+    """Public profile fields; never expose account email or credentials."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    image_path: str
+    image_file: str | None
+
+
 class UserLogin(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=4, max_length=100)
@@ -56,7 +66,7 @@ class UserUpdate(BaseModel):
     username: str | None = Field(None, min_length=3, max_length=50)
     email: str | None = Field(None, min_length=1, max_length=120)
     image_file: None = Field(default=None, description="Set to null to reset; upload using PUT /api/users/me/image.")
-    password: str | None = Field(None, min_length=4, max_length=100)
+    password: str | None = Field(None, min_length=8, max_length=100)
 
     @field_validator("username")
     @classmethod
