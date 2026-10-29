@@ -95,4 +95,3 @@ class AsyncAppTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertTrue(response.json()["date_posted"])
         return response.json()
-

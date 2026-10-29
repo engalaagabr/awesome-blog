@@ -108,4 +108,3 @@ class PostAPITests(AsyncAppTestCase):
         self.assertIn("Alice first", response.text)
         self.assertIn("Alice second", response.text)
         self.assertNotIn("Bob private listing", response.text)
-

@@ -239,4 +239,3 @@ class AppAPITests(AsyncAppTestCase):
         response = await self.client.post("/api/posts/", json={"title": "Allowed", "content": "Body"},
                                           headers={"Origin": "http://test"})
         self.assertEqual(response.status_code, 201, response.text)
-

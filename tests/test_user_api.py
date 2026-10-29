@@ -557,4 +557,3 @@ class UserAPITests(AsyncAppTestCase):
         response = await self.client.delete(f"/api/users/{user['id']}/delete")
         self.assertEqual(response.status_code, 204, response.text)
         self.assertEqual(list(self.profile_directory.iterdir()), [])
-
