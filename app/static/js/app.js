@@ -14,6 +14,7 @@ let currentUser = null;
 let pendingNewPost = false;
 let previewUrl = null;
 let profileBusy = false;
+let postInteractions = null;
 
 function message(text, type = "success") {
     pageMessage.textContent = text;
@@ -44,10 +45,155 @@ function updateUser(user) {
         document.getElementById("postActions").hidden =
             !user || user.id !== Number(postDetail.dataset.authorId);
     }
+    postInteractions?.update(user);
     renderAccount(user, previousUser);
 }
 
 const api = createApi(homeUrl, () => updateUser(null));
+
+function setupPostInteractions() {
+    if (!postDetail) return null;
+    const postId = postDetail.dataset.postId;
+    const likeButton = document.getElementById("likePostButton");
+    const likeCount = document.getElementById("likeCount");
+    const commentList = document.getElementById("commentList");
+    const commentCount = document.getElementById("commentCount");
+    const commentStatus = document.getElementById("commentStatus");
+    const moreComments = document.getElementById("moreComments");
+    const perPage = 10;
+    let user = null;
+    let liked = false;
+    let page = 0;
+    let total = 0;
+    let requestVersion = 0;
+    let userLoaded = false;
+
+    function renderLike(state) {
+        liked = state.liked;
+        likeButton.textContent = liked ? "Unlike" : "Like";
+        likeButton.classList.toggle("btn-primary", liked);
+        likeButton.classList.toggle("btn-outline-primary", !liked);
+        likeButton.setAttribute("aria-pressed", String(liked));
+        likeCount.textContent = `${state.count} ${state.count === 1 ? "like" : "likes"}`;
+        likeButton.disabled = false;
+    }
+
+    async function loadLike() {
+        const version = ++requestVersion;
+        likeButton.disabled = true;
+        try {
+            const state = await api(user ? `posts/${postId}/like` : `posts/${postId}/likes`);
+            if (version === requestVersion) renderLike({ ...state, liked: user ? state.liked : false });
+        } catch (error) {
+            if (version === requestVersion) {
+                likeButton.disabled = false;
+                likeCount.textContent = error.message;
+            }
+        }
+    }
+
+    function renderComment(comment) {
+        const item = document.createElement("li");
+        item.className = "border-top py-3";
+        const header = document.createElement("div");
+        header.className = "d-flex align-items-center gap-2 mb-1";
+        const author = document.createElement("a");
+        author.href = new URL(`users/${comment.user_id}/posts`, homeUrl).href;
+        author.textContent = comment.author;
+        const date = document.createElement("time");
+        date.className = "text-body-secondary small";
+        date.dateTime = comment.date_posted;
+        const parsedDate = new Date(comment.date_posted);
+        date.textContent = Number.isNaN(parsedDate.valueOf()) ? "" : parsedDate.toLocaleString();
+        header.append(author, date);
+        item.append(header);
+        const content = document.createElement("p");
+        content.className = "mb-2";
+        content.textContent = comment.content;
+        item.append(content);
+        if (user?.id === comment.user_id) {
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "btn btn-sm btn-outline-danger";
+            remove.dataset.deleteComment = String(comment.id);
+            remove.textContent = "Delete";
+            item.append(remove);
+        }
+        return item;
+    }
+
+    async function loadComments({ append = false } = {}) {
+        const requestedPage = append ? page + 1 : 1;
+        commentStatus.textContent = "Loading comments…";
+        moreComments.disabled = true;
+        try {
+            const result = await api(`posts/${postId}/comments?page=${requestedPage}&per_page=${perPage}`);
+            if (!append) commentList.replaceChildren();
+            result.items.forEach(comment => commentList.append(renderComment(comment)));
+            page = result.page;
+            total = result.total;
+            commentCount.textContent = `(${total})`;
+            commentStatus.textContent = total ? "" : "No comments yet. Start the conversation.";
+            moreComments.hidden = page * perPage >= total;
+        } catch (error) {
+            commentStatus.textContent = error.message;
+        } finally {
+            moreComments.disabled = false;
+        }
+    }
+
+    likeButton.addEventListener("click", async () => {
+        await sessionReady;
+        if (!user) {
+            document.getElementById("loginNotice").textContent = "Log in to like this post.";
+            document.getElementById("loginNotice").hidden = false;
+            showModal("loginModal");
+            return;
+        }
+        likeButton.disabled = true;
+        try {
+            const state = await api(`posts/${postId}/like`, {
+                method: liked ? "DELETE" : "PUT",
+            });
+            renderLike(state);
+        } catch (error) {
+            likeCount.textContent = error.message;
+            likeButton.disabled = false;
+        }
+    });
+
+    document.querySelector("[data-engagement-login]").addEventListener("click", () => {
+        document.getElementById("loginNotice").textContent = "Log in to add a comment.";
+        document.getElementById("loginNotice").hidden = false;
+        showModal("loginModal");
+    });
+    moreComments.addEventListener("click", () => loadComments({ append: true }));
+    commentList.addEventListener("click", async event => {
+        const button = event.target.closest("[data-delete-comment]");
+        if (!button || button.disabled) return;
+        button.disabled = true;
+        try {
+            await api(`posts/${postId}/comments/${button.dataset.deleteComment}`, { method: "DELETE" });
+            await loadComments();
+        } catch (error) {
+            button.disabled = false;
+            commentStatus.textContent = error.message;
+        }
+    });
+
+    return {
+        update(nextUser) {
+            const changedUser = !userLoaded || user?.id !== nextUser?.id;
+            user = nextUser;
+            userLoaded = true;
+            if (changedUser) loadComments();
+            loadLike();
+        },
+        refreshComments: loadComments,
+    };
+}
+
+postInteractions = setupPostInteractions();
 
 const sessionReady = api("users/me").then(updateUser).catch(error => {
     updateUser(null);
@@ -276,6 +422,11 @@ bindForm("createPostForm", async (data, form) => {
 
 if (postDetail) {
     const postPath = `posts/${postDetail.dataset.postId}`;
+    bindForm("commentForm", async (data, form) => {
+        await api(`${postPath}/comments`, { method: "POST", body: { content: data.content } });
+        form.reset();
+        await postInteractions.refreshComments();
+    });
     document.getElementById("editPostModal").addEventListener("show.bs.modal", () => {
         document.getElementById("editTitle").value = postDetail.querySelector(".article-title").textContent;
         document.getElementById("editContent").value = postDetail.querySelector(".article-content").textContent;

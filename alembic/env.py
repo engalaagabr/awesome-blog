@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.database import Base
 from app.core.config import settings
-from app.models import post, refresh_token, revoked_token, user  # noqa: F401
+from app.models import comment, like, post, refresh_token, revoked_token, user  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
