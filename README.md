@@ -1,104 +1,46 @@
 # Awesome Blog API
 
-An async REST API for user accounts, posts, likes, and comments. It uses FastAPI, SQLAlchemy async, PostgreSQL, and Alembic. Interactive API documentation is available at `/docs`.
+An asynchronous REST API for accounts, posts, likes, and comments, built with FastAPI and PostgreSQL.
 
-## Features
+## Quick setup
 
-- User registration, login, logout, refresh-token rotation, and profile management.
-- Create, list, update, and delete posts with paginated collections.
-- Like and unlike posts; browse and manage comments.
-- HttpOnly cookie sessions for browser clients and Bearer tokens for API clients.
-- PostgreSQL migrations, health checks, and Docker Compose setup.
-- Profile image uploads with format, size, and image-processing limits.
-
-## Run with Docker Compose
-
-Copy the example settings and create private values for the database password and JWT secret:
+Requires Docker with the Compose plugin. Copy the example environment file and edit `.env`: set a URL-safe `POSTGRES_PASSWORD` and a private `JWT_SECRET_KEY` (at least 32 characters). Generate a key with:
 
 ```bash
-cp .env.example .env
 python -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-Set `POSTGRES_PASSWORD` to a URL-safe password and put the generated value in `JWT_SECRET_KEY` in `.env`. Keep `.env` private; it is ignored by Git. Then start the stack:
+Start PostgreSQL, apply migrations, and run the API:
 
 ```bash
-docker compose config --quiet
+cp .env.example .env
 docker compose up --build -d --wait
 ```
 
-The API listens on `http://localhost:8082` by default. Open `http://localhost:8082/docs` for Swagger UI, `http://localhost:8082/redoc` for ReDoc, or `http://localhost:8082/health` for readiness status. Set `BLOG_PORT` to change the host port.
+The API is available at `http://localhost:8082`. Check it with `curl http://localhost:8082/health`; open `http://localhost:8082/docs` to browse and try the endpoints. Use `docker compose down` to stop the services while keeping their data.
 
-Stop the services while keeping database and uploaded images:
+## Basic usage
 
-```bash
-docker compose down
-```
-
-`docker compose down --volumes` also deletes persisted data.
-
-## Run locally
-
-Create `.env` as above, then install development dependencies and start PostgreSQL:
+Register a local test account, then log in and save its session cookie:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
-docker compose up -d db
-alembic upgrade head
-uvicorn app.main:app --reload
+curl -X POST http://localhost:8082/api/users/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"demo_user","email":"demo@example.com","password":"ChangeMe1"}'
+
+curl -i -c cookies.txt http://localhost:8082/api/users/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"demo_user","password":"ChangeMe1"}'
 ```
 
-The local `DATABASE_URL` in `.env.example` points to PostgreSQL on `localhost`. Compose overrides it with the database service address for containers.
-
-## API overview
-
-All resources are documented in `/docs` and `/openapi.json`. Main routes include:
-
-| Route | Purpose |
-| --- | --- |
-| `GET /health` | Check application and database readiness. |
-| `POST /api/users/register` | Create an account. |
-| `POST /api/users/login` | Start a session and receive access/refresh tokens. |
-| `POST /api/users/refresh` | Rotate a refresh token. |
-| `GET /api/users/me` | Read the authenticated user's profile. |
-| `GET /api/posts/` | Browse posts with pagination. |
-| `POST /api/posts/` | Create a post as the authenticated user. |
-| `GET /api/posts/{post_id}` | Read a post and its like/comment counts. |
-| `GET /api/posts/{post_id}/comments` | Browse paginated comments. |
-| `PUT /api/posts/{post_id}/like` | Like a post. |
-
-Protected routes accept the `blog_session` cookie or an `Authorization: Bearer <access-token>` header. Browser write requests must be same-origin. Collection routes accept `page` and `per_page`; post lists include pagination totals in response headers.
-
-## Migrations
-
-Create and review a migration after changing SQLAlchemy models:
+Use the cookie to read your profile or create a post:
 
 ```bash
-alembic revision --autogenerate -m "describe the schema change"
-alembic upgrade head
+curl -b cookies.txt http://localhost:8082/api/users/me
+
+curl -b cookies.txt -X POST http://localhost:8082/api/posts/ \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"My first post","content":"Hello from the API."}'
 ```
 
-Use `alembic current` to display the database revision. Read generated migrations before applying them to important data.
-
-## Tests
-
-The Python test suite uses isolated SQLite databases and does not require the Compose database:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-## Project layout
-
-- `app/api/` — REST endpoints and routers.
-- `app/core/` — configuration, authentication, database sessions, and error handling.
-- `app/models/` and `app/schemas/` — SQLAlchemy models and Pydantic schemas.
-- `alembic/` — database migrations.
-- `tests/` — API integration tests.
-- `docs/` — additional Arabic setup and authentication guides.
-
-## Configuration
-
-See `.env.example` for the required environment variables. Never commit `.env`, production credentials, database files, or uploaded profile images.
+See the [Project Guide](docs/PROJECT_GUIDE.md) for local development, all endpoints, authentication details, migrations, and tests.
