@@ -15,6 +15,32 @@
         </div>
         <h2 class="article-title">{{ post.title }}</h2>
         <p class="article-content">{{ post.content }}</p>
+        <section class="post-engagement mt-3 pt-3 border-top"
+                 id="postEngagement" aria-label="Likes and comments">
+          <div class="d-flex align-items-center gap-3 mb-3">
+            <button type="button" id="likePostButton" class="btn btn-outline-primary"
+                    aria-pressed="false" disabled>Like</button>
+            <span id="likeCount" class="text-body-secondary" aria-live="polite">Loading likes…</span>
+          </div>
+          <h3 class="h5">Comments <span id="commentCount" class="text-body-secondary"></span></h3>
+          <p id="commentStatus" class="text-body-secondary" role="status"></p>
+          <ul id="commentList" class="list-unstyled" aria-live="polite"></ul>
+          <button type="button" id="moreComments" class="btn btn-outline-secondary mb-3" hidden>
+            Load more comments
+          </button>
+          <form id="commentForm" class="mb-3" data-auth-only hidden>
+            <label for="commentContent" class="form-label">Add a comment</label>
+            <textarea class="form-control mb-2" id="commentContent" name="content"
+                      rows="3" maxlength="2000" required></textarea>
+            <div class="alert alert-danger" data-form-error role="alert" hidden></div>
+            <button type="submit" class="btn btn-primary">Comment</button>
+          </form>
+          <p id="commentSignIn" class="text-body-secondary" data-guest-only>
+            <button type="button" class="btn btn-link p-0" data-engagement-login>
+              Log in to like and comment.
+            </button>
+          </p>
+        </section>
         <div class="post-actions mt-3 pt-3 border-top" id="postActions" hidden>
           <button type="button" class="btn btn-outline-secondary me-1"
                   data-bs-toggle="modal" data-bs-target="#editPostModal">Edit Post</button>

@@ -8,9 +8,15 @@ __pycache__/
 *.py[cod]
 .Python
 .venv/
+.venv-*/
 venv/
+env/
 ENV/
+.env/
+__pypackages__/
 *.egg-info/
+*.egg
+.eggs/
 build/
 dist/
 pip-wheel-metadata/
@@ -22,6 +28,8 @@ pip-wheel-metadata/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+.pyre/
+.pytype/
 .coverage
 .coverage.*
 htmlcov/
@@ -34,13 +42,22 @@ junit.xml
 .idea/
 .DS_Store
 Thumbs.db
+*~
+*.swp
+*.swo
+
+# Runtime logs
 *.log
+*.log.*
+logs/
 
 # Local databases and database backups
 *.db
 *.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 *.dump
 *.pgdump
 *.pg_dump

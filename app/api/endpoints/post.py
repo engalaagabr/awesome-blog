@@ -1,16 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.auth import get_current_user
 from app.models.post import Post
+from app.models import Comment, Like
 from app.models.user import User
-from app.schemas.post import PostCreate, PostResponse, PostUpdate
+from app.schemas.post import PostCreate, PostDetailResponse, PostResponse, PostUpdate
 from app.utils.pagination import PaginationParams, paginate_posts
 
 router = APIRouter()
 
-@router.get("/", response_model=list[PostResponse])
+@router.get(
+    "/", response_model=list[PostResponse], summary="List posts",
+    description="Returns posts newest-first. Use `page` and `per_page` to paginate; totals are returned in response headers.",
+)
 async def get_posts(
     response: Response,
     pagination: PaginationParams = Depends(),
@@ -20,7 +25,10 @@ async def get_posts(
     response.headers.update(result.headers)
     return result.items
 
-@router.post("/", response_model=PostResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/", response_model=PostResponse, status_code=status.HTTP_201_CREATED,
+    summary="Create a post", description="Creates a post owned by the signed-in user.",
+)
 async def create_post(
     post_in: PostCreate,
     db: AsyncSession = Depends(get_db),
@@ -40,7 +48,10 @@ async def create_post(
     return new_post
 
 
-@router.get("/{post_id}", response_model=PostResponse)
+@router.get(
+    "/{post_id}", response_model=PostDetailResponse, summary="Get a post",
+    description="Returns the post, author, like count, and comment count.",
+)
 async def get_post(post_id: int, db: AsyncSession = Depends(get_db)):
     post = await db.get(Post, post_id)
     if not post:
@@ -48,9 +59,22 @@ async def get_post(post_id: int, db: AsyncSession = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Post not found",
         )
-    return post
+    likes_count = await db.scalar(
+        select(func.count()).select_from(Like).where(Like.post_id == post_id)
+    ) or 0
+    comments_count = await db.scalar(
+        select(func.count()).select_from(Comment).where(Comment.post_id == post_id)
+    ) or 0
+    return PostDetailResponse(
+        **PostResponse.model_validate(post).model_dump(),
+        likes_count=likes_count,
+        comments_count=comments_count,
+    )
 
-@router.patch("/{post_id}", response_model=PostResponse)
+@router.patch(
+    "/{post_id}", response_model=PostResponse, summary="Update a post",
+    description="Updates a post. Only its author can make changes.",
+)
 async def update_post(
     post_id: int, 
     post_update: PostUpdate,  
@@ -80,7 +104,10 @@ async def update_post(
     
     return post
 
-@router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{post_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a post",
+    description="Deletes a post and its likes and comments. Only its author can delete it.",
+)
 async def delete_post(
     post_id: int, 
     db: AsyncSession = Depends(get_db),

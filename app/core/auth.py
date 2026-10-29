@@ -21,7 +21,14 @@ REFRESH_COOKIE_NAME = "blog_refresh"
 JWT_ALGORITHM = "HS256"
 JWT_ISSUER = "awesome-blog"
 JWT_AUDIENCE = "awesome-blog-api"
-bearer_scheme = HTTPBearer(auto_error=False)
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    scheme_name="AccessToken",
+    description=(
+        "Use the access token returned by login or refresh as `Bearer <token>`. "
+        "Browser sessions can authenticate with the HttpOnly cookie instead."
+    ),
+)
 
 
 def check_origin(request: Request):
